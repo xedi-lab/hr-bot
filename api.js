@@ -111,8 +111,8 @@ app.post('/employee/:telegram_id/shift/open', (req, res) => {
   const hour = now.getHours();
 
 
-  if (hour < 9) return res.status(400).json({ error: `Смену можно открыть только с 09:00 НСК. Сейчас ${hour}:${String(now.getMinutes()).padStart(2, '0')}` });
-  if (hour >= 21) return res.status(400).json({ error: 'Рабочий день уже закончился' });
+  //if (hour < 9) return res.status(400).json({ error: `Смену можно открыть только с 09:00 НСК. Сейчас ${hour}:${String(now.getMinutes()).padStart(2, '0')}` });
+  //if (hour >= 21) return res.status(400).json({ error: 'Рабочий день уже закончился' });
 
 
 
