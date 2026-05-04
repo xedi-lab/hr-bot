@@ -23,7 +23,7 @@ function getEmployee(telegram_id) {
 
 function mainMenu(isAdmin = false) {
   const buttons = [
-    [{ text: '📱 Открыть приложение', web_app: { url: 'https://твой-домен.com' } }],
+    [{ text: '📱 Открыть приложение', web_app: { url: 'https://mini-app-xedi11.vercel.app' } }],
     ['🟢 Открыть смену', '🔴 Закрыть смену'],
     ['📅 График', '👤 Профиль'],
     ['📞 Поддержка']
