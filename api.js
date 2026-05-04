@@ -3,7 +3,7 @@ const cors = require('cors');
 const db = require('./database');
 
 const app = express();
-app.use(cors());
+app.use(cors({ origin: '*' }));
 app.use(express.json());
 
 const PORT = 3001;
@@ -186,6 +186,13 @@ app.get('/admin/stats', (req, res) => {
   });
 
   res.json(result);
+});
+
+app.get('/admin/reset-shift/:telegram_id', (req, res) => {
+  const employee = db.prepare('SELECT * FROM employees WHERE telegram_id = ?').get(parseInt(req.params.telegram_id));
+  if (!employee) return res.status(404).json({ error: 'не найден' });
+  db.prepare('UPDATE shifts SET end_time = start_time, hours_worked = 0, earned = 0 WHERE employee_id = ? AND end_time IS NULL').run(employee.id);
+  res.json({ success: true });
 });
 
 app.listen(PORT, () => {
