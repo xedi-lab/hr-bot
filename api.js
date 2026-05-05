@@ -199,4 +199,53 @@ app.listen(PORT, () => {
   console.log(`API сервер запущен на порту ${PORT}`);
 });
 
+// Получить плановые смены сотрудника
+app.get('/employee/:telegram_id/planned', (req, res) => {
+  const employee = db.prepare('SELECT * FROM employees WHERE telegram_id = ?').get(parseInt(req.params.telegram_id));
+  if (!employee) return res.status(404).json({ error: 'не найден' });
+  const planned = db.prepare('SELECT * FROM planned_shifts WHERE employee_id = ? ORDER BY planned_date ASC').all(employee.id);
+  res.json(planned);
+});
+
+// Добавить плановую смену (для админа)
+app.post('/admin/planned-shift', (req, res) => {
+  const { telegram_id, planned_date, shift_start, shift_end, note } = req.body;
+  const employee = db.prepare('SELECT * FROM employees WHERE telegram_id = ?').get(parseInt(telegram_id));
+  if (!employee) return res.status(404).json({ error: 'не найден' });
+  db.prepare('INSERT INTO planned_shifts (employee_id, planned_date, shift_start, shift_end, note) VALUES (?, ?, ?, ?, ?)').run(employee.id, planned_date, shift_start, shift_end, note || '');
+  res.json({ success: true });
+});
+
+// Удалить плановую смену
+app.delete('/admin/planned-shift/:id', (req, res) => {
+  db.prepare('DELETE FROM planned_shifts WHERE id = ?').run(parseInt(req.params.id));
+  res.json({ success: true });
+});
+
+// Обновить сотрудника (ставка, место работы)
+app.patch('/admin/employee/:telegram_id', (req, res) => {
+  const { hourly_rate, workplace } = req.body;
+  const employee = db.prepare('SELECT * FROM employees WHERE telegram_id = ?').get(parseInt(req.params.telegram_id));
+  if (!employee) return res.status(404).json({ error: 'не найден' });
+  if (hourly_rate !== undefined) db.prepare('UPDATE employees SET hourly_rate = ? WHERE telegram_id = ?').run(parseFloat(hourly_rate), parseInt(req.params.telegram_id));
+  if (workplace !== undefined) db.prepare('UPDATE employees SET workplace = ? WHERE telegram_id = ?').run(workplace, parseInt(req.params.telegram_id));
+  res.json({ success: true });
+});
+
+// История смен сотрудника (для админа)
+app.get('/admin/employee/:telegram_id/shifts', (req, res) => {
+  const employee = db.prepare('SELECT * FROM employees WHERE telegram_id = ?').get(parseInt(req.params.telegram_id));
+  if (!employee) return res.status(404).json({ error: 'не найден' });
+  const shifts = db.prepare('SELECT * FROM shifts WHERE employee_id = ? AND end_time IS NOT NULL ORDER BY start_time DESC LIMIT 50').all(employee.id);
+  res.json(shifts);
+});
+
+// Плановые смены сотрудника (для админа)
+app.get('/admin/employee/:telegram_id/planned', (req, res) => {
+  const employee = db.prepare('SELECT * FROM employees WHERE telegram_id = ?').get(parseInt(req.params.telegram_id));
+  if (!employee) return res.status(404).json({ error: 'не найден' });
+  const planned = db.prepare('SELECT * FROM planned_shifts WHERE employee_id = ? ORDER BY planned_date ASC').all(employee.id);
+  res.json(planned);
+});
+
 module.exports = app;
