@@ -23,7 +23,6 @@ function getEmployee(telegram_id) {
 
 function mainMenu(isAdmin = false) {
   const buttons = [
-    [{ text: '📱 Открыть приложение', web_app: { url: 'https://mini-app-xedi11.vercel.app' } }],
     ['🟢 Открыть смену', '🔴 Закрыть смену'],
     ['📅 График', '👤 Профиль'],
     ['📞 Поддержка']
@@ -32,24 +31,44 @@ function mainMenu(isAdmin = false) {
   return Markup.keyboard(buttons).resize();
 }
 
+function getMiniAppButton(userId) {
+  const url = `https://mini-app-xedi11.vercel.app?uid=${userId}`;
+  return Markup.inlineKeyboard([
+    [Markup.button.webApp('📱 Открыть приложение', url)]
+  ]);
+}
+
+function getMiniAppButton(userId) {
+  const url = `https://mini-app-xedi11.vercel.app?uid=${userId}`;
+  return Markup.inlineKeyboard([
+    [Markup.button.webApp('📱 Открыть приложение', url)]
+  ]);
+}
+
 bot.start((ctx) => {
   const employee = getEmployee(ctx.from.id);
   const admin = ctx.from.id === ADMIN_ID;
-
   if (employee) {
     ctx.reply(`С возвращением, ${employee.first_name}!`, mainMenu(admin));
+    ctx.reply('👇 Твоё рабочее приложение:', getMiniAppButton(ctx.from.id));
+    ctx.reply('Открыть рабочее приложение:', getMiniAppButton(ctx.from.id));
+    ctx.reply('👇 Твоё рабочее приложение:', getMiniAppButton(ctx.from.id));
   } else if (admin) {
     ctx.reply('Добро пожаловать, администратор!', mainMenu(true));
+    ctx.reply('👇 Твоё рабочее приложение:', getMiniAppButton(ctx.from.id));
+    ctx.reply('Открыть рабочее приложение:', getMiniAppButton(ctx.from.id));
+    ctx.reply('👇 Твоё рабочее приложение:', getMiniAppButton(ctx.from.id));
   } else {
     const pending = db.prepare('SELECT * FROM pending_employees WHERE telegram_id = ?').get(ctx.from.id);
     if (pending) {
       ctx.reply('⏳ Твоя заявка уже отправлена. Ожидай одобрения администратора.');
+      ctx.reply('👇 Твоё рабочее приложение:', getMiniAppButton(ctx.from.id));
     } else {
       ctx.reply(
-        'Привет! Ты не зарегистрирован в системе.\n\n' +
-        'Хочешь подать заявку на регистрацию?',
+        'Привет! Ты не зарегистрирован в системе.\n\nХочешь подать заявку на регистрацию?',
         Markup.keyboard([['📝 Подать заявку']]).resize()
       );
+      ctx.reply('👇 Твоё рабочее приложение:', getMiniAppButton(ctx.from.id));
     }
   }
 });
@@ -242,6 +261,9 @@ bot.hears('📞 Поддержка', (ctx) => {
     'Разработчик: @твой_юзернейм',
     mainMenu()
   );
+});
+bot.command('app', (ctx) => {
+  ctx.reply('👇 Твоё рабочее приложение:', getMiniAppButton(ctx.from.id));
 });
 registerAdmin(bot, mainMenu);
 registerNotifications(bot);
