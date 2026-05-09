@@ -1,50 +1,53 @@
-const Database = require('better-sqlite3');
-const db = new Database('hr.db');
+const { Pool } = require('pg');
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS employees (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    telegram_id INTEGER UNIQUE,
-    first_name TEXT,
-    last_name TEXT,
-    hourly_rate REAL,
-    workplace TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL && process.env.DATABASE_URL.includes('railway.internal') 
+    ? false 
+    : { rejectUnauthorized: false }
+});
 
-  CREATE TABLE IF NOT EXISTS shifts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    employee_id INTEGER,
-    start_time DATETIME,
-    end_time DATETIME,
-    hours_worked REAL,
-    earned REAL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (employee_id) REFERENCES employees(id)
-  );
-`);
+async function initDB() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS employees (
+      id SERIAL PRIMARY KEY,
+      telegram_id BIGINT UNIQUE,
+      first_name TEXT,
+      last_name TEXT,
+      hourly_rate REAL,
+      workplace TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS pending_employees (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    telegram_id INTEGER UNIQUE,
-    first_name TEXT,
-    last_name TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
-`);
+    CREATE TABLE IF NOT EXISTS shifts (
+      id SERIAL PRIMARY KEY,
+      employee_id INTEGER REFERENCES employees(id),
+      start_time TIMESTAMP,
+      end_time TIMESTAMP,
+      hours_worked REAL,
+      earned REAL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS planned_shifts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    employee_id INTEGER,
-    planned_date TEXT,
-    shift_start TEXT,
-    shift_end TEXT,
-    note TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (employee_id) REFERENCES employees(id)
-  );
-`);
+    CREATE TABLE IF NOT EXISTS pending_employees (
+      id SERIAL PRIMARY KEY,
+      telegram_id BIGINT UNIQUE,
+      first_name TEXT,
+      last_name TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
 
-module.exports = db;
+    CREATE TABLE IF NOT EXISTS planned_shifts (
+      id SERIAL PRIMARY KEY,
+      employee_id INTEGER REFERENCES employees(id),
+      planned_date TEXT,
+      shift_start TEXT,
+      shift_end TEXT,
+      note TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  console.log('База данных инициализирована');
+}
+
+module.exports = { pool, initDB };
