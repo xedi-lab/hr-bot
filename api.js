@@ -276,6 +276,85 @@ app.get('/register/status/:telegram_id', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Dashboard для админа
+app.get('/admin/dashboard', async (req, res) => {
+  try {
+    const now = new Date();
+    now.setHours(now.getUTCHours() + 7);
+    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    const { rows: employees } = await pool.query('SELECT * FROM employees');
+
+    const employeeStats = await Promise.all(employees.map(async emp => {
+      const { rows: openShift } = await pool.query(
+        'SELECT * FROM shifts WHERE employee_id = $1 AND end_time IS NULL', [emp.id]
+      );
+      const { rows: todayShift } = await pool.query(
+        'SELECT * FROM shifts WHERE employee_id = $1 AND start_time >= $2 AND end_time IS NOT NULL',
+        [emp.id, startOfDay]
+      );
+      const { rows: monthStats } = await pool.query(
+        'SELECT SUM(earned) as total_earned FROM shifts WHERE employee_id = $1 AND start_time >= $2 AND end_time IS NOT NULL',
+        [emp.id, startOfMonth]
+      );
+
+      const onShift = openShift.length > 0;
+      const workedToday = todayShift.length > 0;
+
+      let status = 'not_working';
+      if (onShift) status = 'on_shift';
+      else if (workedToday) status = 'done';
+
+      return {
+        id: emp.id,
+        telegram_id: emp.telegram_id,
+        first_name: emp.first_name,
+        last_name: emp.last_name,
+        workplace: emp.workplace,
+        hourly_rate: emp.hourly_rate,
+        status,
+        on_shift: onShift,
+        open_shift: openShift[0] || null,
+        worked_today: workedToday,
+        today_earned: todayShift.reduce((sum, s) => sum + parseFloat(s.earned || 0), 0),
+        today_hours: todayShift.reduce((sum, s) => sum + parseFloat(s.hours_worked || 0), 0),
+        month_earned: parseFloat(monthStats[0]?.total_earned || 0)
+      };
+    }));
+
+    const onShiftNow = employeeStats.filter(e => e.status === 'on_shift');
+    const doneToday = employeeStats.filter(e => e.status === 'done');
+    const notWorking = employeeStats.filter(e => e.status === 'not_working');
+
+    const totalTodayEarned = employeeStats.reduce((sum, e) => sum + e.today_earned, 0);
+    const totalMonthEarned = employeeStats.reduce((sum, e) => sum + e.month_earned, 0);
+
+    // Лента активности — последние 20 событий за сегодня
+    const { rows: activity } = await pool.query(`
+      SELECT s.*, e.first_name, e.last_name
+      FROM shifts s
+      JOIN employees e ON s.employee_id = e.id
+      WHERE s.start_time >= $1
+      ORDER BY GREATEST(s.start_time, COALESCE(s.end_time, s.start_time)) DESC
+      LIMIT 20
+    `, [startOfDay]);
+
+    res.json({
+      summary: {
+        on_shift_count: onShiftNow.length,
+        done_today_count: doneToday.length,
+        not_working_count: notWorking.length,
+        total_employees: employees.length,
+        today_payroll: parseFloat(totalTodayEarned.toFixed(2)),
+        month_payroll: parseFloat(totalMonthEarned.toFixed(2))
+      },
+      employees: employeeStats,
+      activity
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.listen(PORT, () => console.log(`API сервер запущен на порту ${PORT}`));
 
 module.exports = app;
