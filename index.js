@@ -3,6 +3,7 @@ require('./api');
 const { Telegraf, Markup } = require('telegraf');
 const { pool, initDB } = require('./database');
 const { registerNotifications } = require('./notifications');
+const { registerAdmin } = require('./admin');
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const ADMIN_ID = parseInt(process.env.ADMIN_ID);
@@ -129,11 +130,9 @@ bot.action(/reject_(\d+)/, async (ctx) => {
   await ctx.reply('Заявка отклонена.');
 });
 
-const { registerAdmin } = require('./admin');
-
 initDB().then(() => {
-    registerAdmin(bot);
-    registerNotifications(bot);
+  registerAdmin(bot);
+  registerNotifications(bot);
   bot.launch();
   console.log('Бот запущен...');
 });
