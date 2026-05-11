@@ -34,15 +34,10 @@ bot.start(async (ctx) => {
     await ctx.reply(`👋 С возвращением, ${name}!`);
     await ctx.reply('Открой рабочее приложение:', getMiniAppButton(ctx.from.id));
   } else {
-    const pending = await getPending(ctx.from.id);
-    if (pending) {
-      await ctx.reply('⏳ Твоя заявка уже отправлена. Ожидай одобрения администратора.');
-    } else {
-      await ctx.reply(
-        'Привет! 👋\n\nТы не зарегистрирован в системе.\nХочешь подать заявку?',
-        Markup.keyboard([['📝 Подать заявку']]).resize()
-      );
-    }
+    await ctx.reply(
+      '👋 Привет!\n\nТы не зарегистрирован в системе. Воспользуйся удобным приложением чтобы подать заявку на доступ.'
+    );
+    await ctx.reply('👇 Открыть приложение:', getMiniAppButton(ctx.from.id));
   }
 });
 
@@ -51,23 +46,6 @@ bot.command('app', async (ctx) => {
 });
 
 const userStates = {};
-
-bot.hears('📝 Подать заявку', async (ctx) => {
-  const employee = await getEmployee(ctx.from.id);
-  if (employee) return ctx.reply('Ты уже зарегистрирован. Открой приложение:', getMiniAppButton(ctx.from.id));
-  userStates[ctx.from.id] = { step: 'first_name' };
-  ctx.reply('Введи своё имя:');
-});
-
-bot.on('text', async (ctx, next) => {
-  const state = userStates[ctx.from.id];
-  if (!state) return next();
-
-  if (state.step === 'first_name') {
-    userStates[ctx.from.id].first_name = ctx.message.text;
-    userStates[ctx.from.id].step = 'last_name';
-    return ctx.reply('Введи свою фамилию:');
-  }
 
   if (state.step === 'last_name') {
     const { first_name } = userStates[ctx.from.id];
