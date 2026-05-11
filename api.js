@@ -220,6 +220,62 @@ app.get('/admin/reset-shift/:telegram_id', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+app.post('/register', async (req, res) => {
+  try {
+    const { telegram_id, first_name, last_name } = req.body;
+    if (!telegram_id || !first_name || !last_name) {
+      return res.status(400).json({ error: 'Заполни все поля' });
+    }
+
+    const { rows: existing } = await pool.query('SELECT * FROM employees WHERE telegram_id = $1', [parseInt(telegram_id)]);
+    if (existing[0]) return res.status(400).json({ error: 'Ты уже зарегистрирован' });
+
+    const { rows: pending } = await pool.query('SELECT * FROM pending_employees WHERE telegram_id = $1', [parseInt(telegram_id)]);
+    if (pending[0]) return res.status(400).json({ status: 'pending' });
+
+    await pool.query(
+      'INSERT INTO pending_employees (telegram_id, first_name, last_name) VALUES ($1, $2, $3)',
+      [parseInt(telegram_id), first_name.trim(), last_name.trim()]
+    );
+
+    // Уведомить администратора
+    try {
+      const botToken = process.env.BOT_TOKEN;
+      const adminId = process.env.ADMIN_ID;
+      await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: adminId,
+          text: `📥 Новая заявка (мини-апп):\n\nИмя: ${first_name} ${last_name}\nTG ID: ${telegram_id}`,
+          reply_markup: {
+            inline_keyboard: [[
+              { text: '✅ Одобрить', callback_data: `approve_${telegram_id}` },
+              { text: '❌ Отклонить', callback_data: `reject_${telegram_id}` }
+            ]]
+          }
+        })
+      });
+    } catch {}
+
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Проверить статус регистрации
+app.get('/register/status/:telegram_id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.telegram_id);
+    const { rows: emp } = await pool.query('SELECT * FROM employees WHERE telegram_id = $1', [id]);
+    if (emp[0]) return res.json({ status: 'approved' });
+
+    const { rows: pending } = await pool.query('SELECT * FROM pending_employees WHERE telegram_id = $1', [id]);
+    if (pending[0]) return res.json({ status: 'pending' });
+
+    res.json({ status: 'none' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.listen(PORT, () => console.log(`API сервер запущен на порту ${PORT}`));
 
 module.exports = app;
