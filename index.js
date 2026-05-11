@@ -129,8 +129,11 @@ bot.action(/reject_(\d+)/, async (ctx) => {
   await ctx.reply('Заявка отклонена.');
 });
 
+const { registerAdmin } = require('./admin');
+
 initDB().then(() => {
-  registerNotifications(bot);
+    registerAdmin(bot);
+    registerNotifications(bot);
   bot.launch();
   console.log('Бот запущен...');
 });
