@@ -60,10 +60,11 @@ function registerNotifications(bot) {
     }
   });
 
-  // Каждые 15 минут — проверка смен которые начнутся через 15 минут
+  // Каждые 15 минут — напоминания и алёрты
   cron.schedule('*/15 2-14 * * *', async () => {
     try {
       await sendShiftSoonReminders(bot);
+      await checkLateEmployees(bot);
     } catch (e) {
       console.error('Ошибка напоминания за 15 минут:', e.message);
     }
@@ -155,4 +156,50 @@ async function sendShiftSoonReminders(bot) {
   }
 }
 
-module.exports = { registerNotifications, sendTomorrowReminders };
+// Алёрты админу об опозданиях
+async function checkLateEmployees(bot) {
+  try {
+    const now = new Date();
+    now.setHours(now.getUTCHours() + 7);
+    const todayStr = now.toISOString().slice(0, 10);
+    const currentMinutes = now.getHours() * 60 + now.getMinutes();
+
+    const { rows: shifts } = await pool.query(`
+      SELECT ps.*, e.telegram_id, e.first_name, e.last_name, e.id as emp_id
+      FROM planned_shifts ps
+      JOIN employees e ON ps.employee_id = e.id
+      WHERE ps.planned_date = $1
+    `, [todayStr]);
+
+    for (const shift of shifts) {
+      const [sh, sm] = shift.shift_start.split(':').map(Number);
+      const shiftMinutes = sh * 60 + sm;
+      const diff = currentMinutes - shiftMinutes;
+
+      // Опоздал — прошло от 15 до 17 минут после начала смены
+      if (diff >= 15 && diff <= 17) {
+        // Проверяем открыл ли смену
+        const { rows: openShift } = await pool.query(
+          'SELECT * FROM shifts WHERE employee_id = $1 AND end_time IS NULL', [shift.emp_id]
+        );
+        const { rows: todayShift } = await pool.query(
+          'SELECT * FROM shifts WHERE employee_id = $1 AND start_time >= $2',
+          [shift.emp_id, new Date(now.getFullYear(), now.getMonth(), now.getDate())]
+        );
+
+        if (openShift.length === 0 && todayShift.length === 0) {
+          const text = `⚠️ Опоздание!\n\n👤 ${shift.first_name} ${shift.last_name}\n🕐 Плановое начало: ${shift.shift_start}\n⏱ Опаздывает на 15+ минут\n\nСмена не открыта.`;
+          try {
+            await bot.telegram.sendMessage(ADMIN_ID, text);
+          } catch (e) {
+            console.error('Ошибка алёрта опоздания:', e.message);
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.error('Ошибка checkLateEmployees:', e.message);
+  }
+}
+
+module.exports = { registerNotifications, sendTomorrowReminders, checkLateEmployees };
