@@ -372,6 +372,66 @@ app.get('/admin/dashboard', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Аналитика сотрудника
+app.get('/employee/:telegram_id/analytics', async (req, res) => {
+  try {
+    const { rows: emp } = await pool.query('SELECT * FROM employees WHERE telegram_id = $1', [parseInt(req.params.telegram_id)]);
+    if (!emp[0]) return res.status(404).json({ error: 'не найден' });
+
+    const now = new Date();
+    now.setHours(now.getUTCHours() + 7);
+
+    const weekStart = new Date(now); weekStart.setDate(now.getDate() - 7);
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const threeMonthStart = new Date(now); threeMonthStart.setMonth(now.getMonth() - 3);
+
+    const [{ rows: weekShifts }, { rows: monthShifts }, { rows: threeMonthShifts }] = await Promise.all([
+      pool.query('SELECT * FROM shifts WHERE employee_id = $1 AND start_time >= $2 AND end_time IS NOT NULL', [emp[0].id, weekStart]),
+      pool.query('SELECT * FROM shifts WHERE employee_id = $1 AND start_time >= $2 AND end_time IS NOT NULL', [emp[0].id, monthStart]),
+      pool.query('SELECT * FROM shifts WHERE employee_id = $1 AND start_time >= $2 AND end_time IS NOT NULL', [emp[0].id, threeMonthStart])
+    ]);
+
+    const monthEarned = monthShifts.reduce((sum, s) => sum + parseFloat(s.earned || 0), 0);
+    const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    const daysPassed = now.getDate();
+    const avgDaily = daysPassed > 0 ? monthEarned / daysPassed : 0;
+    const forecast = Math.round(monthEarned + avgDaily * (daysInMonth - daysPassed));
+
+    const todayStr = now.toISOString().slice(0, 10);
+    const monthStartStr = monthStart.toISOString().slice(0, 10);
+    const { rows: plannedThisMonth } = await pool.query(
+      'SELECT * FROM planned_shifts WHERE employee_id = $1 AND planned_date >= $2 AND planned_date <= $3',
+      [emp[0].id, monthStartStr, todayStr]
+    );
+
+    const plannedCount = plannedThisMonth.length;
+    const workedCount = monthShifts.length;
+    const attendanceRate = plannedCount > 0 ? Math.round((workedCount / plannedCount) * 100) : null;
+
+    res.json({
+      week: {
+        shifts_count: weekShifts.length,
+        hours: weekShifts.reduce((sum, s) => sum + parseFloat(s.hours_worked || 0), 0).toFixed(1),
+        earned: weekShifts.reduce((sum, s) => sum + parseFloat(s.earned || 0), 0).toFixed(0)
+      },
+      month: {
+        shifts_count: monthShifts.length,
+        hours: monthShifts.reduce((sum, s) => sum + parseFloat(s.hours_worked || 0), 0).toFixed(1),
+        earned: monthEarned.toFixed(0)
+      },
+      three_months: {
+        shifts_count: threeMonthShifts.length,
+        hours: threeMonthShifts.reduce((sum, s) => sum + parseFloat(s.hours_worked || 0), 0).toFixed(1),
+        earned: threeMonthShifts.reduce((sum, s) => sum + parseFloat(s.earned || 0), 0).toFixed(0)
+      },
+      forecast,
+      attendance_rate: attendanceRate,
+      planned_count: plannedCount,
+      worked_count: workedCount
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.listen(PORT, () => console.log(`API сервер запущен на порту ${PORT}`));
 
 module.exports = app;
