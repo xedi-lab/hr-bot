@@ -31,18 +31,22 @@ function registerAdmin(bot) {
   });
 
   bot.command('delete_employee', async (ctx) => {
-    if (!isAdmin(ctx)) return ctx.reply('У тебя нет доступа.');
+  if (!isAdmin(ctx)) return ctx.reply('У тебя нет доступа.');
 
-    const parts = ctx.message.text.split(' ').slice(1);
-    if (!parts[0]) return ctx.reply('Формат: /delete_employee [telegram_id]');
+  const parts = ctx.message.text.split(' ').slice(1);
+  if (!parts[0]) return ctx.reply('Формат: /delete_employee [telegram_id]');
 
-    const telegram_id = parseInt(parts[0]);
-    const { rows } = await pool.query('SELECT * FROM employees WHERE telegram_id = $1', [telegram_id]);
-    if (!rows[0]) return ctx.reply(`⚠️ Сотрудник с ID ${telegram_id} не найден.`);
+  const telegram_id = parseInt(parts[0]);
+  const { rows } = await pool.query('SELECT * FROM employees WHERE telegram_id = $1', [telegram_id]);
+  if (!rows[0]) return ctx.reply(`⚠️ Сотрудник с ID ${telegram_id} не найден.`);
 
-    await pool.query('DELETE FROM employees WHERE telegram_id = $1', [telegram_id]);
-    ctx.reply(`✅ Сотрудник ${rows[0].first_name} ${rows[0].last_name} удалён.`);
-  });
+  // Сначала удаляем плановые смены и смены
+  await pool.query('DELETE FROM planned_shifts WHERE employee_id = $1', [rows[0].id]);
+  await pool.query('DELETE FROM shifts WHERE employee_id = $1', [rows[0].id]);
+  await pool.query('DELETE FROM employees WHERE telegram_id = $1', [telegram_id]);
+
+  ctx.reply(`✅ Сотрудник ${rows[0].first_name} ${rows[0].last_name} и все его данные удалены.`);
+});
 
   bot.command('set_rate', async (ctx) => {
     if (!isAdmin(ctx)) return ctx.reply('У тебя нет доступа.');
