@@ -189,6 +189,42 @@ app.post('/admin/planned-shift', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Отработанные смены сотрудника за 3 месяца для календаря
+app.get('/employee/:telegram_id/shifts/calendar', async (req, res) => {
+  try {
+    const { rows: emp } = await pool.query('SELECT * FROM employees WHERE telegram_id = $1', [parseInt(req.params.telegram_id)]);
+    if (!emp[0]) return res.status(404).json({ error: 'не найден' });
+
+    const threeMonthsAgo = new Date();
+    threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+
+    const { rows } = await pool.query(
+      `SELECT * FROM shifts 
+       WHERE employee_id = $1 
+       AND start_time >= $2 
+       AND end_time IS NOT NULL 
+       ORDER BY start_time DESC`,
+      [emp[0].id, threeMonthsAgo]
+    );
+
+    const result = rows.map(s => {
+      const start = new Date(s.start_time);
+      const end = new Date(s.end_time);
+      const dateStr = `${start.getUTCFullYear()}-${String(start.getUTCMonth()+1).padStart(2,'0')}-${String(start.getUTCDate()).padStart(2,'0')}`;
+      return {
+        id: s.id,
+        date: dateStr,
+        start_time: `${String(start.getUTCHours()).padStart(2,'0')}:${String(start.getUTCMinutes()).padStart(2,'0')}`,
+        end_time: `${String(end.getUTCHours()).padStart(2,'0')}:${String(end.getUTCMinutes()).padStart(2,'0')}`,
+        hours_worked: parseFloat(s.hours_worked).toFixed(1),
+        earned: parseFloat(s.earned).toFixed(0)
+      };
+    });
+
+    res.json(result);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Удалить плановую смену
 app.delete('/admin/planned-shift/:id', async (req, res) => {
   try {
