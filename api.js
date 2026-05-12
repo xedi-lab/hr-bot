@@ -166,8 +166,25 @@ app.post('/admin/planned-shift', async (req, res) => {
     const { telegram_id, planned_date, shift_start, shift_end, note } = req.body;
     const { rows: emp } = await pool.query('SELECT * FROM employees WHERE telegram_id = $1', [parseInt(telegram_id)]);
     if (!emp[0]) return res.status(404).json({ error: 'не найден' });
-    await pool.query('INSERT INTO planned_shifts (employee_id, planned_date, shift_start, shift_end, note) VALUES ($1, $2, $3, $4, $5)',
-      [emp[0].id, planned_date, shift_start, shift_end, note || '']);
+
+    await pool.query(
+      'INSERT INTO planned_shifts (employee_id, planned_date, shift_start, shift_end, note) VALUES ($1, $2, $3, $4, $5)',
+      [emp[0].id, planned_date, shift_start, shift_end, note || '']
+    );
+
+    // Уведомить сотрудника
+    try {
+      const botToken = process.env.BOT_TOKEN;
+      const [year, month, day] = planned_date.split('-');
+      const dateFormatted = `${day}.${month}.${year}`;
+      const text = `📅 Тебе назначена смена!\n\n📆 ${dateFormatted}\n🕐 ${shift_start} — ${shift_end}${note ? `\n📍 ${note}` : ''}\n\nОткрой приложение чтобы посмотреть свой график.`;
+      await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: telegram_id, text })
+      });
+    } catch {}
+
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
