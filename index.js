@@ -83,7 +83,20 @@ bot.action(/reject_(\d+)/, async (ctx) => {
 initDB().then(() => {
   registerAdmin(bot);
   registerNotifications(bot);
-  bot.launch();
+  const startBot = async () => {
+  try {
+    await bot.launch();
+  } catch (e) {
+    if (e.message && e.message.includes('409')) {
+      console.log('Конфликт инстансов, перезапуск через 5 сек...');
+      setTimeout(startBot, 5000);
+    } else {
+      throw e;
+    }
+  }
+};
+
+startBot();
   console.log('Бот запущен...');
 });
 
