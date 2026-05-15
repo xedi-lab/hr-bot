@@ -250,18 +250,17 @@ function registerMasterBot(app) {
 
       if (registerCompanyBotFn) await registerCompanyBotFn(company);
 
+      const botLink = `https://t.me/${botInfo.username}`;
+
       await ctx.reply(
-        `✅ *Компания подключена!*\n\n🏢 ${companyName}\n🤖 @${botInfo.username}\n👤 Админ: ${adminTelegramId}\n🆔 ID: ${company.id}`,
+        `✅ *Компания подключена!*\n\n` +
+        `🏢 Название: *${companyName}*\n` +
+        `🤖 Бот: @${botInfo.username}\n` +
+        `👤 Админ ID: \`${adminTelegramId}\`\n` +
+        `🆔 Company ID: ${company.id}\n\n` +
+        `📲 *Отправь заказчику эту ссылку:*\n${botLink}`,
         { parse_mode: 'Markdown', ...mainMenuKeyboard() }
       );
-
-      try {
-        await bot.telegram.sendMessage(
-          adminTelegramId,
-          `👋 Ваша компания *${companyName}* подключена к HR-Bot.\n\nВаш корпоративный бот: @${botInfo.username}\n\nНажмите /start чтобы начать работу.`,
-          { parse_mode: 'Markdown' }
-        );
-      } catch {}
       return;
     }
   });
