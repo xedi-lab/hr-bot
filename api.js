@@ -38,7 +38,13 @@ app.get('/employee/:telegram_id/stats', async (req, res) => {
 
     const { rows: openShift } = await pool.query('SELECT * FROM shifts WHERE employee_id = $1 AND end_time IS NULL', [emp[0].id]);
 
-    res.json({ ...stats[0], on_shift: openShift.length > 0, open_shift: openShift[0] || null });
+    const startOfDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    const { rows: todayShifts } = await pool.query(
+      'SELECT id FROM shifts WHERE employee_id = $1 AND start_time >= $2',
+      [emp[0].id, startOfDay]
+    );
+
+    res.json({ ...stats[0], on_shift: openShift.length > 0, open_shift: openShift[0] || null, worked_today: todayShifts.length > 0 });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
