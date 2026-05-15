@@ -42,6 +42,22 @@ function requireCid(req, res) {
   return id;
 }
 
+// ── Проверить является ли пользователь админом компании ──────────────────────
+
+app.get('/admin/me', async (req, res) => {
+  try {
+    const companyId = requireCid(req, res);
+    if (!companyId) return;
+    const uid = parseInt(req.query.uid);
+    if (!uid) return res.json({ is_admin: false });
+    const { rows } = await pool.query(
+      'SELECT id FROM companies WHERE id = $1 AND admin_telegram_id = $2 AND active = TRUE',
+      [companyId, uid]
+    );
+    res.json({ is_admin: rows.length > 0 });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Получить сотрудника ───────────────────────────────────────────────────────
 
 app.get('/employee/:telegram_id', async (req, res) => {
