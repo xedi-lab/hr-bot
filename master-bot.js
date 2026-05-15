@@ -19,6 +19,15 @@ const userStates = {};
 let registerCompanyBotFn = null;
 function setRegisterFn(fn) { registerCompanyBotFn = fn; }
 
+let suspendFn = null;
+let resumeFn = null;
+let deleteInstanceFn = null;
+function setControllers({ suspend, resume, deleteInstance }) {
+  suspendFn = suspend;
+  resumeFn = resume;
+  deleteInstanceFn = deleteInstance;
+}
+
 // ── Клавиатуры ────────────────────────────────────────────────────────────────
 function mainMenuKeyboard() {
   return Markup.inlineKeyboard([
@@ -228,6 +237,7 @@ function registerMasterBot() {
     await ctx.answerCbQuery('🔴 Заморожено');
     const id = parseInt(ctx.match[1]);
     await pool.query('UPDATE companies SET active = FALSE WHERE id = $1', [id]);
+    if (suspendFn) await suspendFn(id);
     await showCompany(ctx, id);
   });
 
@@ -235,6 +245,7 @@ function registerMasterBot() {
     await ctx.answerCbQuery('🟢 Восстановлено');
     const id = parseInt(ctx.match[1]);
     await pool.query('UPDATE companies SET active = TRUE WHERE id = $1', [id]);
+    if (resumeFn) await resumeFn(id);
     await showCompany(ctx, id);
   });
 
@@ -259,6 +270,10 @@ function registerMasterBot() {
     const { rows } = await pool.query('SELECT name FROM companies WHERE id = $1', [id]);
     const name = rows[0]?.name || `#${id}`;
 
+    // Сначала останавливаем бота (удаляем webhook)
+    if (deleteInstanceFn) await deleteInstanceFn(id);
+
+    // Каскадное удаление из БД
     const empRows = await pool.query('SELECT id FROM employees WHERE company_id = $1', [id]);
     for (const emp of empRows.rows) {
       await pool.query('DELETE FROM adjustments WHERE employee_id = $1', [emp.id]);
@@ -385,4 +400,4 @@ function registerMasterBot() {
   return bot;
 }
 
-module.exports = { registerMasterBot, setRegisterFn };
+module.exports = { registerMasterBot, setRegisterFn, setControllers };
