@@ -78,7 +78,7 @@ async function autoOpenPlannedShifts(bot) {
   try {
     const now = new Date();
     now.setHours(now.getUTCHours() + 7);
-    const todayStr = now.toISOString().slice(0, 10);
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
     const currentMinutes = now.getHours() * 60 + now.getMinutes();
 
     const { rows: shifts } = await pool.query(`
@@ -169,7 +169,7 @@ async function sendTomorrowReminders(bot) {
 
     for (const shift of shifts) {
       const dateFormatted = `${tomorrow.getDate()}.${String(tomorrow.getMonth() + 1).padStart(2, '0')}`;
-      const text = `📅 Напоминание о смене\n\nЗавтра (${dateFormatted}) у тебя смена:\n🕐 ${shift.shift_start} — ${shift.shift_end}${shift.note ? `\n📍 ${shift.note}` : ''}\n\nНе забудь открыть смену вовремя!`;
+      const text = `📅 Напоминание о смене\n\nЗавтра (${dateFormatted}) у тебя смена:\n🕐 ${shift.shift_start} — ${shift.shift_end}${shift.note ? `\n📍 ${shift.note}` : ''}\n\nСмена откроется автоматически. Не забудь подтвердить присутствие в приложении.`;
       try {
         await bot.telegram.sendMessage(shift.telegram_id, text);
       } catch (e) {
