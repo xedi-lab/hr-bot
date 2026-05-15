@@ -1,5 +1,5 @@
 const { Telegraf, Markup } = require('telegraf');
-const { pool, getAllCompanies } = require('./database');
+const { pool } = require('./database');
 
 const MASTER_ADMIN_IDS = [
   parseInt(process.env.ADMIN_ID),
@@ -10,13 +10,16 @@ function isMasterAdmin(ctx) {
   return MASTER_ADMIN_IDS.includes(ctx.from.id);
 }
 
-// Состояния ожидания ввода: { userId: { action, data } }
+function esc(text) {
+  return String(text ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 const userStates = {};
 
 let registerCompanyBotFn = null;
 function setRegisterFn(fn) { registerCompanyBotFn = fn; }
 
-// ── Главное меню ──────────────────────────────────────────────────────────────
+// ── Клавиатуры ────────────────────────────────────────────────────────────────
 function mainMenuKeyboard() {
   return Markup.inlineKeyboard([
     [Markup.button.callback('🏢 Компании', 'companies')],
@@ -24,13 +27,14 @@ function mainMenuKeyboard() {
   ]);
 }
 
+// ── Главное меню ──────────────────────────────────────────────────────────────
 async function showMainMenu(ctx) {
   const { rows } = await pool.query('SELECT COUNT(*) as cnt FROM companies');
-  const text = `🤖 *Мастер-бот HR-Bot*\n\nВсего компаний: *${rows[0].cnt}*`;
+  const text = `🤖 <b>Мастер-бот HR-Bot</b>\n\nВсего компаний: <b>${rows[0].cnt}</b>`;
   if (ctx.callbackQuery) {
-    await ctx.editMessageText(text, { parse_mode: 'Markdown', ...mainMenuKeyboard() });
+    await ctx.editMessageText(text, { parse_mode: 'HTML', ...mainMenuKeyboard() });
   } else {
-    await ctx.reply(text, { parse_mode: 'Markdown', ...mainMenuKeyboard() });
+    await ctx.reply(text, { parse_mode: 'HTML', ...mainMenuKeyboard() });
   }
 }
 
@@ -59,8 +63,8 @@ async function showCompanies(ctx) {
   buttons.push([Markup.button.callback('◀️ Назад', 'main_menu')]);
 
   await ctx.editMessageText(
-    `🏢 *Компании (${rows.length}):*`,
-    { parse_mode: 'Markdown', ...Markup.inlineKeyboard(buttons) }
+    `🏢 <b>Компании (${rows.length}):</b>`,
+    { parse_mode: 'HTML', ...Markup.inlineKeyboard(buttons) }
   );
 }
 
@@ -88,13 +92,14 @@ async function showCompany(ctx, companyId) {
   const status = c.active ? '🟢 Активна' : '🔴 Заморожена';
 
   const text =
-    `🏢 *${c.name}*\n\n` +
+    `🏢 <b>${esc(c.name)}</b>\n\n` +
     `Статус: ${status}\n` +
-    `Бот: ${botUsername}\n` +
+    `Бот: ${esc(botUsername)}\n` +
     `Сотрудников: ${c.employee_count}\n` +
     `Подключена: ${date}`;
 
   const buttons = [
+    [Markup.button.callback('📊 Статистика', `stats_${c.id}`)],
     [Markup.button.callback('✏️ Переименовать', `rename_start_${c.id}`)],
     [Markup.button.callback(
       c.active ? '🔴 Заморозить' : '🟢 Восстановить',
@@ -104,7 +109,70 @@ async function showCompany(ctx, companyId) {
     [Markup.button.callback('◀️ К списку', 'companies')],
   ];
 
-  await ctx.editMessageText(text, { parse_mode: 'Markdown', ...Markup.inlineKeyboard(buttons) });
+  await ctx.editMessageText(text, { parse_mode: 'HTML', ...Markup.inlineKeyboard(buttons) });
+}
+
+// ── Статистика компании ───────────────────────────────────────────────────────
+async function showStats(ctx, companyId) {
+  const { rows: company } = await pool.query('SELECT name FROM companies WHERE id = $1', [companyId]);
+  if (!company[0]) return ctx.answerCbQuery('Компания не найдена');
+
+  const now = new Date();
+  const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+  const { rows: emps } = await pool.query(`
+    SELECT
+      e.first_name, e.last_name, e.hourly_rate, e.workplace, e.telegram_id,
+      COUNT(s.id) AS shifts_count,
+      COALESCE(SUM(s.hours_worked), 0) AS total_hours,
+      COALESCE(SUM(s.earned), 0) AS total_earned,
+      MAX(CASE WHEN s.end_time IS NULL THEN 1 ELSE 0 END) AS on_shift
+    FROM employees e
+    LEFT JOIN shifts s ON s.employee_id = e.id
+      AND TO_CHAR(s.start_time AT TIME ZONE 'UTC', 'YYYY-MM') = $2
+    WHERE e.company_id = $1
+    GROUP BY e.id, e.first_name, e.last_name, e.hourly_rate, e.workplace, e.telegram_id
+    ORDER BY total_earned DESC
+  `, [companyId, month]);
+
+  const { rows: pending } = await pool.query(
+    'SELECT COUNT(*) as cnt FROM pending_employees WHERE company_id = $1', [companyId]
+  );
+
+  let text = `📊 <b>Статистика: ${esc(company[0].name)}</b>\n`;
+  text += `📅 Месяц: ${month}\n\n`;
+
+  if (emps.length === 0) {
+    text += 'Сотрудников пока нет.';
+  } else {
+    let totalPayroll = 0;
+    let onShiftCount = 0;
+
+    emps.forEach((e, i) => {
+      const earned = parseFloat(e.total_earned).toFixed(0);
+      const hours = parseFloat(e.total_hours).toFixed(1);
+      const shifts = parseInt(e.shifts_count);
+      const onShift = parseInt(e.on_shift) === 1;
+      if (onShift) onShiftCount++;
+      totalPayroll += parseFloat(e.total_earned);
+
+      text += `${i + 1}. <b>${esc(e.first_name)} ${esc(e.last_name)}</b>${onShift ? ' 🟢' : ''}\n`;
+      text += `   📍 ${esc(e.workplace)} · ${e.hourly_rate} ₽/ч\n`;
+      text += `   Смен: ${shifts} · ${hours}ч · <b>${earned} ₽</b>\n\n`;
+    });
+
+    text += `💰 <b>Итого ФОТ: ${totalPayroll.toFixed(0)} ₽</b>\n`;
+    text += `🟢 На смене сейчас: ${onShiftCount}\n`;
+  }
+
+  if (parseInt(pending[0].cnt) > 0) {
+    text += `\n⏳ Заявок на рассмотрении: ${pending[0].cnt}`;
+  }
+
+  await ctx.editMessageText(text, {
+    parse_mode: 'HTML',
+    ...Markup.inlineKeyboard([[Markup.button.callback('◀️ Назад', `company_${companyId}`)]])
+  });
 }
 
 function registerMasterBot() {
@@ -116,6 +184,15 @@ function registerMasterBot() {
 
   const bot = new Telegraf(token);
 
+  // ── Глобальный обработчик ошибок ─────────────────────────────────────────
+  bot.catch((err, ctx) => {
+    console.error(`[Master Bot] Ошибка в ${ctx.updateType}:`, err.message);
+    try {
+      if (ctx.callbackQuery) ctx.answerCbQuery('❌ Ошибка').catch(() => {});
+      ctx.reply(`❌ Ошибка: ${err.message}`).catch(() => {});
+    } catch {}
+  });
+
   // ── /start ────────────────────────────────────────────────────────────────
   bot.start(async ctx => {
     if (!isMasterAdmin(ctx)) return ctx.reply('Нет доступа.');
@@ -123,7 +200,7 @@ function registerMasterBot() {
     await showMainMenu(ctx);
   });
 
-  // ── Навигация по кнопкам ──────────────────────────────────────────────────
+  // ── Навигация ─────────────────────────────────────────────────────────────
   bot.action('main_menu', async ctx => {
     await ctx.answerCbQuery();
     delete userStates[ctx.from.id];
@@ -140,30 +217,36 @@ function registerMasterBot() {
     await showCompany(ctx, parseInt(ctx.match[1]));
   });
 
+  // ── Статистика ────────────────────────────────────────────────────────────
+  bot.action(/^stats_(\d+)$/, async ctx => {
+    await ctx.answerCbQuery();
+    await showStats(ctx, parseInt(ctx.match[1]));
+  });
+
   // ── Заморозить / Восстановить ─────────────────────────────────────────────
   bot.action(/^suspend_(\d+)$/, async ctx => {
-    await ctx.answerCbQuery();
+    await ctx.answerCbQuery('🔴 Заморожено');
     const id = parseInt(ctx.match[1]);
     await pool.query('UPDATE companies SET active = FALSE WHERE id = $1', [id]);
     await showCompany(ctx, id);
   });
 
   bot.action(/^resume_(\d+)$/, async ctx => {
-    await ctx.answerCbQuery();
+    await ctx.answerCbQuery('🟢 Восстановлено');
     const id = parseInt(ctx.match[1]);
     await pool.query('UPDATE companies SET active = TRUE WHERE id = $1', [id]);
     await showCompany(ctx, id);
   });
 
-  // ── Удалить компанию (подтверждение) ─────────────────────────────────────
+  // ── Удалить компанию ──────────────────────────────────────────────────────
   bot.action(/^delete_confirm_(\d+)$/, async ctx => {
     await ctx.answerCbQuery();
     const id = parseInt(ctx.match[1]);
     const { rows } = await pool.query('SELECT name FROM companies WHERE id = $1', [id]);
-    if (!rows[0]) return ctx.answerCbQuery('Компания не найдена');
+    if (!rows[0]) return;
     await ctx.editMessageText(
-      `⚠️ *Удалить компанию "${rows[0].name}"?*\n\nБудут удалены все сотрудники, смены и данные. Это действие необратимо.`,
-      { parse_mode: 'Markdown', ...Markup.inlineKeyboard([
+      `⚠️ <b>Удалить компанию &quot;${esc(rows[0].name)}&quot;?</b>\n\nБудут удалены все сотрудники, смены и данные. Это действие необратимо.`,
+      { parse_mode: 'HTML', ...Markup.inlineKeyboard([
         [Markup.button.callback('🗑 Да, удалить', `delete_do_${id}`)],
         [Markup.button.callback('◀️ Отмена', `company_${id}`)],
       ]) }
@@ -171,7 +254,7 @@ function registerMasterBot() {
   });
 
   bot.action(/^delete_do_(\d+)$/, async ctx => {
-    await ctx.answerCbQuery();
+    await ctx.answerCbQuery('🗑 Удалено');
     const id = parseInt(ctx.match[1]);
     const { rows } = await pool.query('SELECT name FROM companies WHERE id = $1', [id]);
     const name = rows[0]?.name || `#${id}`;
@@ -186,7 +269,7 @@ function registerMasterBot() {
     await pool.query('DELETE FROM pending_employees WHERE company_id = $1', [id]);
     await pool.query('DELETE FROM companies WHERE id = $1', [id]);
 
-    await ctx.editMessageText(`✅ Компания *${name}* удалена.`, { parse_mode: 'Markdown', ...mainMenuKeyboard() });
+    await ctx.editMessageText(`✅ Компания <b>${esc(name)}</b> удалена.`, { parse_mode: 'HTML', ...mainMenuKeyboard() });
   });
 
   // ── Переименовать ─────────────────────────────────────────────────────────
@@ -205,11 +288,11 @@ function registerMasterBot() {
     await ctx.answerCbQuery();
     userStates[ctx.from.id] = { action: 'awaiting_provision' };
     await ctx.editMessageText(
-      '➕ *Подключение компании*\n\n' +
+      '➕ <b>Подключение компании</b>\n\n' +
       'Отправь данные в формате:\n' +
-      '`НазваниеКомпании ТОКЕН_БОТА TELEGRAM_ID_АДМИНА`\n\n' +
-      '_Пример:_\n`Ромашка 123456789:AAF... 79112345678`',
-      { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('◀️ Отмена', 'main_menu')]]) }
+      '<code>НазваниеКомпании ТОКЕН_БОТА TELEGRAM_ID_АДМИНА</code>\n\n' +
+      'Пример:\n<code>Ромашка 123456789:AAF... 79112345678</code>',
+      { parse_mode: 'HTML', ...Markup.inlineKeyboard([[Markup.button.callback('◀️ Отмена', 'main_menu')]]) }
     );
   });
 
@@ -222,33 +305,16 @@ function registerMasterBot() {
     // Переименование
     if (state.action === 'awaiting_rename') {
       const newName = ctx.message.text.trim();
+      const companyId = state.companyId;
       delete userStates[ctx.from.id];
-      const { rows } = await pool.query(
-        'UPDATE companies SET name = $1 WHERE id = $2 RETURNING *', [newName, state.companyId]
+      await pool.query('UPDATE companies SET name = $1 WHERE id = $2', [newName, companyId]);
+      await ctx.reply(
+        `✅ Переименовано в <b>${esc(newName)}</b>`,
+        { parse_mode: 'HTML', ...Markup.inlineKeyboard([
+          [Markup.button.callback('◀️ К карточке компании', `company_${companyId}`)],
+          [Markup.button.callback('🏢 Все компании', 'companies')],
+        ]) }
       );
-      if (!rows[0]) return ctx.reply('Компания не найдена.');
-      await ctx.reply(`✅ Переименовано в *${newName}*`, { parse_mode: 'Markdown' });
-      // Показываем карточку заново
-      const msg = await ctx.reply('Загружаю...') ;
-      const { rows: c } = await pool.query(`
-        SELECT c.*, COUNT(e.id) as employee_count
-        FROM companies c LEFT JOIN employees e ON e.company_id = c.id
-        WHERE c.id = $1 GROUP BY c.id
-      `, [state.companyId]);
-      if (c[0]) {
-        const date = new Date(c[0].created_at).toLocaleDateString('ru-RU');
-        const status = c[0].active ? '🟢 Активна' : '🔴 Заморожена';
-        let botUsername = '—';
-        try { const tb = new Telegraf(c[0].bot_token); const info = await tb.telegram.getMe(); botUsername = `@${info.username}`; } catch {}
-        await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, null,
-          `🏢 *${c[0].name}*\n\nСтатус: ${status}\nБот: ${botUsername}\nСотрудников: ${c[0].employee_count}\nПодключена: ${date}`,
-          { parse_mode: 'Markdown', ...Markup.inlineKeyboard([
-            [Markup.button.callback('✏️ Переименовать', `rename_start_${c[0].id}`)],
-            [Markup.button.callback(c[0].active ? '🔴 Заморозить' : '🟢 Восстановить', c[0].active ? `suspend_${c[0].id}` : `resume_${c[0].id}`)],
-            [Markup.button.callback('◀️ К списку', 'companies')],
-          ]) }
-        );
-      }
       return;
     }
 
@@ -256,7 +322,7 @@ function registerMasterBot() {
     if (state.action === 'awaiting_provision') {
       const parts = ctx.message.text.trim().split(' ');
       if (parts.length < 3) {
-        return ctx.reply('❌ Неверный формат. Нужно: `НазваниеКомпании ТОКЕН TELEGRAM_ID`', { parse_mode: 'Markdown' });
+        return ctx.reply('❌ Неверный формат. Нужно: <code>НазваниеКомпании ТОКЕН TELEGRAM_ID</code>', { parse_mode: 'HTML' });
       }
 
       const [companyName, botToken, adminRaw] = parts;
@@ -285,47 +351,32 @@ function registerMasterBot() {
 
       if (registerCompanyBotFn) await registerCompanyBotFn(company);
 
-      const botLink = `https://t.me/${botInfo.username}`;
-
       await ctx.reply(
-        `✅ *Компания подключена!*\n\n` +
-        `🏢 Название: *${companyName}*\n` +
-        `🤖 Бот: @${botInfo.username}\n` +
-        `👤 Админ ID: \`${adminTelegramId}\`\n` +
+        `✅ <b>Компания подключена!</b>\n\n` +
+        `🏢 Название: <b>${esc(companyName)}</b>\n` +
+        `🤖 Бот: @${esc(botInfo.username)}\n` +
+        `👤 Админ ID: <code>${adminTelegramId}</code>\n` +
         `🆔 Company ID: ${company.id}\n\n` +
-        `📲 *Отправь заказчику эту ссылку:*\n${botLink}`,
-        { parse_mode: 'Markdown', ...mainMenuKeyboard() }
+        `📲 <b>Отправь заказчику эту ссылку:</b>\nhttps://t.me/${botInfo.username}`,
+        { parse_mode: 'HTML', ...mainMenuKeyboard() }
       );
       return;
     }
   });
 
-  // ── Глобальный обработчик ошибок ─────────────────────────────────────────
-  bot.catch((err, ctx) => {
-    console.error(`[Master Bot] Ошибка в ${ctx.updateType}:`, err.message);
-    try {
-      if (ctx.callbackQuery) {
-        ctx.answerCbQuery('❌ Ошибка').catch(() => {});
-        ctx.reply(`❌ Ошибка: ${err.message}`).catch(() => {});
-      } else {
-        ctx.reply(`❌ Ошибка: ${err.message}`).catch(() => {});
-      }
-    } catch {}
-  });
-
   // ── Уведомление о новой заявке с лендинга ────────────────────────────────
   bot.notifyNewLead = async (lead) => {
     const text =
-      `🆕 *Новая заявка с лендинга*\n\n` +
-      `👤 *Имя:* ${lead.name}\n` +
-      `🏢 *Компания:* ${lead.company}\n` +
-      `📱 *Telegram:* ${lead.telegram}\n` +
-      (lead.employees ? `👥 *Сотрудников:* ${lead.employees}\n` : '') +
-      (lead.comment ? `💬 *Комментарий:* ${lead.comment}\n` : '');
+      `🆕 <b>Новая заявка с лендинга</b>\n\n` +
+      `👤 <b>Имя:</b> ${esc(lead.name)}\n` +
+      `🏢 <b>Компания:</b> ${esc(lead.company)}\n` +
+      `📱 <b>Telegram:</b> ${esc(lead.telegram)}\n` +
+      (lead.employees ? `👥 <b>Сотрудников:</b> ${lead.employees}\n` : '') +
+      (lead.comment ? `💬 <b>Комментарий:</b> ${esc(lead.comment)}\n` : '');
 
     for (const adminId of MASTER_ADMIN_IDS) {
       try {
-        await bot.telegram.sendMessage(adminId, text, { parse_mode: 'Markdown' });
+        await bot.telegram.sendMessage(adminId, text, { parse_mode: 'HTML' });
       } catch {}
     }
   };
