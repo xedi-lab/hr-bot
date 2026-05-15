@@ -26,6 +26,7 @@ async function initDB() {
       end_time TIMESTAMP,
       hours_worked REAL,
       earned REAL,
+      confirmed_at TIMESTAMP,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
 
@@ -47,6 +48,12 @@ async function initDB() {
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
   `);
+
+  // Добавляем колонку если её нет (для существующих БД)
+  await pool.query(`
+    ALTER TABLE shifts ADD COLUMN IF NOT EXISTS confirmed_at TIMESTAMP;
+  `);
+
   console.log('База данных инициализирована');
 }
 

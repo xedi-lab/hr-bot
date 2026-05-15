@@ -3,6 +3,11 @@ const cors = require('cors');
 const { pool } = require('./database');
 
 const app = express();
+
+// Текущее время в НСК (UTC+7), timezone-agnostic
+function nsk() {
+  return new Date(Date.now() + 7 * 60 * 60 * 1000);
+}
 app.use(cors({ origin: '*' }));
 app.use(express.json());
 
@@ -23,9 +28,8 @@ app.get('/employee/:telegram_id/stats', async (req, res) => {
     const { rows: emp } = await pool.query('SELECT * FROM employees WHERE telegram_id = $1', [parseInt(req.params.telegram_id)]);
     if (!emp[0]) return res.status(404).json({ error: 'Сотрудник не найден' });
 
-    const now = new Date();
-    now.setHours(now.getUTCHours() + 7);
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const now = nsk();
+    const startOfMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
 
     const { rows: stats } = await pool.query(`
       SELECT COUNT(*) as shifts_count, SUM(hours_worked) as total_hours, SUM(earned) as total_earned
@@ -45,13 +49,12 @@ app.get('/employee/:telegram_id/shifts', async (req, res) => {
     if (!emp[0]) return res.status(404).json({ error: 'Сотрудник не найден' });
 
     const period = req.query.period || 'month';
-    const now = new Date();
-    now.setHours(now.getUTCHours() + 7);
+    const now = nsk();
 
     let startDate;
-    if (period === 'week') { startDate = new Date(now); startDate.setDate(now.getDate() - 7); }
-    else if (period === '3months') { startDate = new Date(now); startDate.setMonth(now.getMonth() - 3); }
-    else { startDate = new Date(now.getFullYear(), now.getMonth(), 1); }
+    if (period === 'week') { startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000); }
+    else if (period === '3months') { startDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 3, now.getUTCDate())); }
+    else { startDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)); }
 
     const { rows } = await pool.query(`
       SELECT * FROM shifts WHERE employee_id = $1 AND start_time >= $2 AND end_time IS NOT NULL
@@ -74,12 +77,11 @@ app.post('/employee/:telegram_id/shift/open', async (req, res) => {
     );
     if (!openShift[0]) return res.status(400).json({ error: 'Нет активной смены для подтверждения' });
 
-    const now = new Date();
-    now.setHours(now.getUTCHours() + 7);
+    const now = nsk();
 
     await pool.query('UPDATE shifts SET confirmed_at = $1 WHERE id = $2', [now, openShift[0].id]);
 
-    res.json({ success: true, confirmed_at: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}` });
+    res.json({ success: true, confirmed_at: `${String(now.getUTCHours()).padStart(2, '0')}:${String(now.getUTCMinutes()).padStart(2, '0')}` });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -92,9 +94,8 @@ app.post('/employee/:telegram_id/shift/close', async (req, res) => {
     const { rows: openShift } = await pool.query('SELECT * FROM shifts WHERE employee_id = $1 AND end_time IS NULL', [emp[0].id]);
     if (!openShift[0]) return res.status(400).json({ error: 'Нет открытой смены' });
 
-    const now = new Date();
-    now.setHours(now.getUTCHours() + 7);
-    const hour = now.getHours();
+    const now = nsk();
+    const hour = now.getUTCHours();
 
     const startTime = new Date(openShift[0].start_time);
     const diffMinutes = (now - startTime) / (1000 * 60);
@@ -106,8 +107,7 @@ app.post('/employee/:telegram_id/shift/close', async (req, res) => {
     let endTime = new Date(now);
     let warning = null;
     if (hour >= 21) {
-      endTime = new Date(now);
-      endTime.setHours(21, 0, 0, 0);
+      endTime = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 21, 0, 0));
       warning = 'Переработка не учитывается. Оплата считается до 21:00.';
     }
 
@@ -134,9 +134,8 @@ app.get('/employee/:telegram_id/planned', async (req, res) => {
 // Статистика всех сотрудников (админ)
 app.get('/admin/stats', async (req, res) => {
   try {
-    const now = new Date();
-    now.setHours(now.getUTCHours() + 7);
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const now = nsk();
+    const startOfMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
 
     const { rows: employees } = await pool.query('SELECT * FROM employees');
 
@@ -190,8 +189,8 @@ app.get('/employee/:telegram_id/shifts/calendar', async (req, res) => {
     const { rows: emp } = await pool.query('SELECT * FROM employees WHERE telegram_id = $1', [parseInt(req.params.telegram_id)]);
     if (!emp[0]) return res.status(404).json({ error: 'не найден' });
 
-    const threeMonthsAgo = new Date();
-    threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+    const _now = nsk();
+    const threeMonthsAgo = new Date(Date.UTC(_now.getUTCFullYear(), _now.getUTCMonth() - 3, _now.getUTCDate()));
 
     const { rows } = await pool.query(
       `SELECT * FROM shifts 
@@ -327,10 +326,9 @@ app.get('/register/status/:telegram_id', async (req, res) => {
 // Dashboard для админа
 app.get('/admin/dashboard', async (req, res) => {
   try {
-    const now = new Date();
-    now.setHours(now.getUTCHours() + 7);
-    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const now = nsk();
+    const startOfDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    const startOfMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
 
     const { rows: employees } = await pool.query('SELECT * FROM employees');
 
@@ -409,12 +407,11 @@ app.get('/employee/:telegram_id/analytics', async (req, res) => {
     const { rows: emp } = await pool.query('SELECT * FROM employees WHERE telegram_id = $1', [parseInt(req.params.telegram_id)]);
     if (!emp[0]) return res.status(404).json({ error: 'не найден' });
 
-    const now = new Date();
-    now.setHours(now.getUTCHours() + 7);
+    const now = nsk();
 
-    const weekStart = new Date(now); weekStart.setDate(now.getDate() - 7);
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-    const threeMonthStart = new Date(now); threeMonthStart.setMonth(now.getMonth() - 3);
+    const weekStart = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+    const threeMonthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 3, now.getUTCDate()));
 
     const [{ rows: weekShifts }, { rows: monthShifts }, { rows: threeMonthShifts }] = await Promise.all([
       pool.query('SELECT * FROM shifts WHERE employee_id = $1 AND start_time >= $2 AND end_time IS NOT NULL', [emp[0].id, weekStart]),
@@ -423,13 +420,13 @@ app.get('/employee/:telegram_id/analytics', async (req, res) => {
     ]);
 
     const monthEarned = monthShifts.reduce((sum, s) => sum + parseFloat(s.earned || 0), 0);
-    const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-    const daysPassed = now.getDate();
+    const daysInMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0)).getUTCDate();
+    const daysPassed = now.getUTCDate();
     const avgDaily = daysPassed > 0 ? monthEarned / daysPassed : 0;
     const forecast = Math.round(monthEarned + avgDaily * (daysInMonth - daysPassed));
 
     const todayStr = now.toISOString().slice(0, 10);
-    const monthStartStr = monthStart.toISOString().slice(0, 10);
+    const monthStartStr = monthStart.toISOString().slice(0, 10); // monthStart уже UTC
     const { rows: plannedThisMonth } = await pool.query(
       'SELECT * FROM planned_shifts WHERE employee_id = $1 AND planned_date >= $2 AND planned_date <= $3',
       [emp[0].id, monthStartStr, todayStr]

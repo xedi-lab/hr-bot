@@ -3,6 +3,11 @@ const { pool } = require('./database');
 
 const ADMIN_ID = parseInt(process.env.ADMIN_ID);
 
+// Текущее время в НСК (UTC+7), timezone-agnostic
+function nsk() {
+  return new Date(Date.now() + 7 * 60 * 60 * 1000);
+}
+
 function registerNotifications(bot) {
 
   // Каждые 15 минут — авто-открытие смен и алёрты опозданий
@@ -19,12 +24,11 @@ function registerNotifications(bot) {
   cron.schedule('0 14 * * *', async () => {
     try {
       await autoCloseShifts();
-      const now = new Date();
-      now.setHours(now.getUTCHours() + 7);
-      const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const now = nsk();
+      const startOfDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
       const { rows: employees } = await pool.query('SELECT * FROM employees');
 
-      let text = `📊 Итог дня (${now.getDate()}.${String(now.getMonth() + 1).padStart(2, '0')}):\n\n`;
+      let text = `📊 Итог дня (${now.getUTCDate()}.${String(now.getUTCMonth() + 1).padStart(2, '0')}):\n\n`;
       let hasData = false;
 
       for (const emp of employees) {
@@ -53,9 +57,8 @@ function registerNotifications(bot) {
   // Тест уведомлений
   bot.command('test_notify', async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) return;
-    const now = new Date();
-    now.setHours(now.getUTCHours() + 7);
-    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const now = nsk();
+    const startOfDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
     const { rows: unconfirmed } = await pool.query(`
       SELECT s.*, e.first_name, e.last_name
       FROM shifts s JOIN employees e ON s.employee_id = e.id
@@ -76,12 +79,11 @@ function registerNotifications(bot) {
 // Авто-открытие плановых смен (вызывается каждые 15 минут)
 async function autoOpenPlannedShifts(bot) {
   try {
-    const now = new Date();
-    now.setHours(now.getUTCHours() + 7);
-    const todayStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
-    const currentMinutes = now.getHours() * 60 + now.getMinutes();
+    const now = nsk();
+    const todayStr = now.toISOString().slice(0, 10);
+    const currentMinutes = now.getUTCHours() * 60 + now.getUTCMinutes();
 
-    console.log(`[autoOpen] ${todayStr} ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')} НСК (${currentMinutes} мин)`);
+    console.log(`[autoOpen] ${todayStr} ${String(now.getUTCHours()).padStart(2,'0')}:${String(now.getUTCMinutes()).padStart(2,'0')} НСК (${currentMinutes} мин)`);
 
     const { rows: shifts } = await pool.query(`
       SELECT ps.*, e.telegram_id, e.first_name, e.last_name, e.id as emp_id
@@ -106,14 +108,19 @@ async function autoOpenPlannedShifts(bot) {
       const { rows: existing } = await pool.query(
         'SELECT id FROM shifts WHERE employee_id = $1 AND end_time IS NULL', [shift.emp_id]
       );
-      if (existing.length > 0) continue;
+      if (existing.length > 0) {
+        console.log(`[autoOpen] ${shift.first_name} ${shift.last_name}: смена уже открыта, пропускаем`);
+        continue;
+      }
 
-      // Создаём смену с плановым временем начала
-      const startTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), sh, sm, 0);
+      // Создаём смену с плановым временем начала (НСК время хранится как UTC)
+      const startTime = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), sh, sm, 0));
       await pool.query(
         'INSERT INTO shifts (employee_id, start_time) VALUES ($1, $2)',
         [shift.emp_id, startTime]
       );
+
+      console.log(`[autoOpen] ✅ Смена создана для ${shift.first_name} ${shift.last_name} в ${shift.shift_start}`);
 
       try {
         await bot.telegram.sendMessage(shift.telegram_id,
@@ -131,9 +138,8 @@ async function autoOpenPlannedShifts(bot) {
 // Авто-закрытие незакрытых смен в 21:00 НСК
 async function autoCloseShifts() {
   try {
-    const now = new Date();
-    now.setHours(now.getUTCHours() + 7);
-    const cutoff = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 21, 0, 0);
+    const now = nsk();
+    const cutoff = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 21, 0, 0));
 
     const { rows: openShifts } = await pool.query(`
       SELECT s.*, e.hourly_rate
@@ -160,10 +166,7 @@ async function autoCloseShifts() {
 // Напоминание за день до смены (вызывается в 21:00 НСК)
 async function sendTomorrowReminders(bot) {
   try {
-    const now = new Date();
-    now.setHours(now.getUTCHours() + 7);
-    const tomorrow = new Date(now);
-    tomorrow.setDate(now.getDate() + 1);
+    const tomorrow = new Date(Date.now() + 7 * 60 * 60 * 1000 + 24 * 60 * 60 * 1000);
     const tomorrowStr = tomorrow.toISOString().slice(0, 10);
 
     const { rows: shifts } = await pool.query(`
@@ -174,7 +177,7 @@ async function sendTomorrowReminders(bot) {
     `, [tomorrowStr]);
 
     for (const shift of shifts) {
-      const dateFormatted = `${tomorrow.getDate()}.${String(tomorrow.getMonth() + 1).padStart(2, '0')}`;
+      const dateFormatted = `${tomorrow.getUTCDate()}.${String(tomorrow.getUTCMonth() + 1).padStart(2, '0')}`;
       const text = `📅 Напоминание о смене\n\nЗавтра (${dateFormatted}) у тебя смена:\n🕐 ${shift.shift_start} — ${shift.shift_end}${shift.note ? `\n📍 ${shift.note}` : ''}\n\nСмена откроется автоматически. Не забудь подтвердить присутствие в приложении.`;
       try {
         await bot.telegram.sendMessage(shift.telegram_id, text);
@@ -190,9 +193,8 @@ async function sendTomorrowReminders(bot) {
 // Алёрты админу о неподтверждённых сменах (15+ минут без подтверждения)
 async function checkLateEmployees(bot) {
   try {
-    const now = new Date();
-    now.setHours(now.getUTCHours() + 7);
-    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const now = nsk();
+    const startOfDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
 
     const { rows: unconfirmed } = await pool.query(`
       SELECT s.*, e.first_name, e.last_name
@@ -205,7 +207,8 @@ async function checkLateEmployees(bot) {
 
     for (const shift of unconfirmed) {
       const minutesLate = Math.floor((now - new Date(shift.start_time)) / (1000 * 60));
-      const text = `⚠️ Смена не подтверждена!\n\n👤 ${shift.first_name} ${shift.last_name}\n🕐 Начало: ${new Date(shift.start_time).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}\n⏱ Без подтверждения: ${minutesLate} мин.`;
+      const startHHMM = String(new Date(shift.start_time).getUTCHours()).padStart(2,'0') + ':' + String(new Date(shift.start_time).getUTCMinutes()).padStart(2,'0');
+      const text = `⚠️ Смена не подтверждена!\n\n👤 ${shift.first_name} ${shift.last_name}\n🕐 Начало: ${startHHMM}\n⏱ Без подтверждения: ${minutesLate} мин.`;
       try {
         await bot.telegram.sendMessage(ADMIN_ID, text);
       } catch (e) {
