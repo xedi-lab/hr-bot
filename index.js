@@ -45,21 +45,9 @@ bot.action(/approve_(\d+)/, async (ctx) => {
   const { rows } = await pool.query('SELECT * FROM pending_employees WHERE telegram_id = $1', [telegram_id]);
   if (!rows[0]) return ctx.reply('Заявка не найдена.');
 
-  let photo_url = null;
-  try {
-    const photos = await ctx.telegram.getUserProfilePhotos(telegram_id, 0, 1);
-    if (photos.total_count > 0) {
-      const fileId = photos.photos[0][0].file_id;
-      const file = await ctx.telegram.getFile(fileId);
-      photo_url = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${file.file_path}`;
-    }
-  } catch (e) {
-    console.log('Не удалось получить фото:', e.message);
-  }
-
   await pool.query(
-    'INSERT INTO employees (telegram_id, first_name, last_name, hourly_rate, workplace, photo_url) VALUES ($1, $2, $3, $4, $5, $6)',
-    [rows[0].telegram_id, rows[0].first_name, rows[0].last_name, 0, 'Не указано', photo_url]
+    'INSERT INTO employees (telegram_id, first_name, last_name, hourly_rate, workplace) VALUES ($1, $2, $3, $4, $5)',
+    [rows[0].telegram_id, rows[0].first_name, rows[0].last_name, 0, 'Не указано']
   );
   await pool.query('DELETE FROM pending_employees WHERE telegram_id = $1', [telegram_id]);
 
