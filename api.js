@@ -12,6 +12,19 @@ function nsk() {
 app.use(cors({ origin: '*' }));
 app.use(express.json());
 
+// Блокируем все запросы к замороженным компаниям
+app.use(async (req, res, next) => {
+  const companyId = parseInt(req.query.cid || req.body?.cid);
+  if (!companyId || isNaN(companyId)) return next();
+  try {
+    const { rows } = await pool.query('SELECT active FROM companies WHERE id = $1', [companyId]);
+    if (rows[0] && !rows[0].active) {
+      return res.status(403).json({ error: 'company_frozen' });
+    }
+  } catch {}
+  next();
+});
+
 const PORT = process.env.PORT || 3001;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
