@@ -129,7 +129,7 @@ async function spawnCompanyBot(company) {
 initDB().then(async () => {
 
   // Мастер-бот
-  const masterBot = registerMasterBot(app);
+  const masterBot = registerMasterBot();
 
   // Регистрируем функцию динамического добавления ботов
   setRegisterFn(spawnCompanyBot);
@@ -150,15 +150,10 @@ initDB().then(async () => {
     }
   }
 
-  // Webhook мастер-бота
-  if (domain && masterBot) {
-    const masterWebhookUrl = `https://${domain}/master-webhook`;
-    await masterBot.telegram.setWebhook(masterWebhookUrl, {
-      allowed_updates: ['message', 'callback_query'],
-    });
-    console.log(`✅ Мастер-бот → webhook ${masterWebhookUrl}`);
-  } else if (masterBot) {
+  // Мастер-бот всегда polling (надёжнее для single-admin бота)
+  if (masterBot) {
     await masterBot.launch({ dropPendingUpdates: true });
+    console.log('✅ Мастер-бот → polling');
   }
 
   console.log('🚀 Все боты запущены');

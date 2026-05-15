@@ -107,7 +107,7 @@ async function showCompany(ctx, companyId) {
   await ctx.editMessageText(text, { parse_mode: 'Markdown', ...Markup.inlineKeyboard(buttons) });
 }
 
-function registerMasterBot(app) {
+function registerMasterBot() {
   const token = process.env.MASTER_BOT_TOKEN;
   if (!token) {
     console.log('⚠️  MASTER_BOT_TOKEN не задан — мастер-бот не запущен');
@@ -300,6 +300,19 @@ function registerMasterBot(app) {
     }
   });
 
+  // ── Глобальный обработчик ошибок ─────────────────────────────────────────
+  bot.catch((err, ctx) => {
+    console.error(`[Master Bot] Ошибка в ${ctx.updateType}:`, err.message);
+    try {
+      if (ctx.callbackQuery) {
+        ctx.answerCbQuery('❌ Ошибка').catch(() => {});
+        ctx.reply(`❌ Ошибка: ${err.message}`).catch(() => {});
+      } else {
+        ctx.reply(`❌ Ошибка: ${err.message}`).catch(() => {});
+      }
+    } catch {}
+  });
+
   // ── Уведомление о новой заявке с лендинга ────────────────────────────────
   bot.notifyNewLead = async (lead) => {
     const text =
@@ -316,12 +329,6 @@ function registerMasterBot(app) {
       } catch {}
     }
   };
-
-  // Webhook мастер-бота
-  app.post('/master-webhook', (req, res) => {
-    res.sendStatus(200);
-    bot.handleUpdate(req.body).catch(e => console.error('Master bot error:', e));
-  });
 
   console.log('✅ Мастер-бот зарегистрирован');
   return bot;
