@@ -49,6 +49,17 @@ async function initDB() {
     );
   `);
 
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS adjustments (
+      id SERIAL PRIMARY KEY,
+      employee_id INTEGER REFERENCES employees(id),
+      amount REAL NOT NULL,
+      comment TEXT,
+      month TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
   // Добавляем колонку если её нет (для существующих БД)
   await pool.query(`
     ALTER TABLE shifts ADD COLUMN IF NOT EXISTS confirmed_at TIMESTAMP;

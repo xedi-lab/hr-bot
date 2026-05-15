@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const ExcelJS = require('exceljs');
 const { pool } = require('./database');
 
 const app = express();
@@ -463,6 +464,371 @@ app.get('/employee/:telegram_id/analytics', async (req, res) => {
       planned_count: plannedCount,
       worked_count: workedCount
     });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── БОНУСЫ / ШТРАФЫ ──────────────────────────────────────────────────────────
+
+app.get('/admin/employee/:telegram_id/adjustments', async (req, res) => {
+  try {
+    const { rows: emp } = await pool.query('SELECT * FROM employees WHERE telegram_id = $1', [parseInt(req.params.telegram_id)]);
+    if (!emp[0]) return res.status(404).json({ error: 'не найден' });
+    const month = req.query.month || nsk().toISOString().slice(0, 7);
+    const { rows } = await pool.query(
+      'SELECT * FROM adjustments WHERE employee_id = $1 AND month = $2 ORDER BY created_at DESC',
+      [emp[0].id, month]
+    );
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/admin/adjustment', async (req, res) => {
+  try {
+    const { telegram_id, amount, comment, month } = req.body;
+    const { rows: emp } = await pool.query('SELECT * FROM employees WHERE telegram_id = $1', [parseInt(telegram_id)]);
+    if (!emp[0]) return res.status(404).json({ error: 'не найден' });
+    const m = month || nsk().toISOString().slice(0, 7);
+    await pool.query(
+      'INSERT INTO adjustments (employee_id, amount, comment, month) VALUES ($1, $2, $3, $4)',
+      [emp[0].id, parseFloat(amount), comment || '', m]
+    );
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/admin/adjustment/:id', async (req, res) => {
+  try {
+    await pool.query('DELETE FROM adjustments WHERE id = $1', [parseInt(req.params.id)]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── НЕЯВКИ ────────────────────────────────────────────────────────────────────
+
+app.get('/admin/employee/:telegram_id/no-shows', async (req, res) => {
+  try {
+    const { rows: emp } = await pool.query('SELECT * FROM employees WHERE telegram_id = $1', [parseInt(req.params.telegram_id)]);
+    if (!emp[0]) return res.status(404).json({ error: 'не найден' });
+    const now = nsk();
+    const todayStr = now.toISOString().slice(0, 7);
+    const monthStart = req.query.month ? req.query.month + '-01' : now.toISOString().slice(0, 7) + '-01';
+
+    // Плановые смены прошедших дней, по которым нет отработанной смены
+    const { rows } = await pool.query(`
+      SELECT ps.planned_date, ps.shift_start, ps.shift_end
+      FROM planned_shifts ps
+      WHERE ps.employee_id = $1
+        AND ps.planned_date >= $2
+        AND ps.planned_date < $3
+        AND NOT EXISTS (
+          SELECT 1 FROM shifts s
+          WHERE s.employee_id = ps.employee_id
+            AND DATE(s.start_time) = ps.planned_date::date
+            AND s.hours_worked > 0
+        )
+      ORDER BY ps.planned_date DESC
+    `, [emp[0].id, monthStart, now.toISOString().slice(0, 10)]);
+
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── ПОВТОРЯЮЩИЕСЯ СМЕНЫ ───────────────────────────────────────────────────────
+
+app.post('/admin/planned-shift/repeat', async (req, res) => {
+  try {
+    const { telegram_id, shift_start, shift_end, note, weeks } = req.body;
+    const { rows: emp } = await pool.query('SELECT * FROM employees WHERE telegram_id = $1', [parseInt(telegram_id)]);
+    if (!emp[0]) return res.status(404).json({ error: 'не найден' });
+
+    const baseDate = new Date(req.body.planned_date);
+    const created = [];
+
+    for (let i = 0; i < (weeks || 4); i++) {
+      const d = new Date(baseDate.getTime() + i * 7 * 24 * 60 * 60 * 1000);
+      const dateStr = d.toISOString().slice(0, 10);
+      // Не дублируем если уже есть
+      const { rows: exists } = await pool.query(
+        'SELECT id FROM planned_shifts WHERE employee_id = $1 AND planned_date = $2',
+        [emp[0].id, dateStr]
+      );
+      if (exists.length > 0) continue;
+      await pool.query(
+        'INSERT INTO planned_shifts (employee_id, planned_date, shift_start, shift_end, note) VALUES ($1, $2, $3, $4, $5)',
+        [emp[0].id, dateStr, shift_start, shift_end, note || '']
+      );
+      created.push(dateStr);
+    }
+
+    // Уведомить сотрудника
+    try {
+      const botToken = process.env.BOT_TOKEN;
+      const text = `📅 Вам назначены повторяющиеся смены!\n\n🕐 ${shift_start} — ${shift_end}\n📆 ${created.length} недель начиная с ${baseDate.toLocaleDateString('ru-RU')}${note ? `\n📍 ${note}` : ''}`;
+      await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: telegram_id, text })
+      });
+    } catch {}
+
+    res.json({ success: true, created });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── РАСЧЁТНЫЙ ЛИСТ (PAYROLL SUMMARY) ─────────────────────────────────────────
+
+app.get('/admin/payroll', async (req, res) => {
+  try {
+    const now = nsk();
+    const month = req.query.month || now.toISOString().slice(0, 7);
+    const [year, mon] = month.split('-').map(Number);
+    const monthStart = new Date(Date.UTC(year, mon - 1, 1));
+    const monthEnd = new Date(Date.UTC(year, mon, 1));
+
+    const { rows: employees } = await pool.query('SELECT * FROM employees');
+
+    const result = await Promise.all(employees.map(async emp => {
+      const { rows: shifts } = await pool.query(
+        'SELECT * FROM shifts WHERE employee_id = $1 AND start_time >= $2 AND start_time < $3 AND end_time IS NOT NULL AND hours_worked > 0',
+        [emp.id, monthStart, monthEnd]
+      );
+      const { rows: adjs } = await pool.query(
+        'SELECT * FROM adjustments WHERE employee_id = $1 AND month = $2',
+        [emp.id, month]
+      );
+
+      // Неявки
+      const monthStartStr = month + '-01';
+      const todayStr = now.toISOString().slice(0, 10);
+      const { rows: noShows } = await pool.query(`
+        SELECT COUNT(*) as cnt FROM planned_shifts ps
+        WHERE ps.employee_id = $1
+          AND ps.planned_date >= $2 AND ps.planned_date < $3
+          AND NOT EXISTS (
+            SELECT 1 FROM shifts s
+            WHERE s.employee_id = ps.employee_id
+              AND DATE(s.start_time) = ps.planned_date::date
+              AND s.hours_worked > 0
+          )
+      `, [emp.id, monthStartStr, todayStr]);
+
+      const earned = shifts.reduce((s, r) => s + parseFloat(r.earned || 0), 0);
+      const hours = shifts.reduce((s, r) => s + parseFloat(r.hours_worked || 0), 0);
+      const adjTotal = adjs.reduce((s, r) => s + parseFloat(r.amount || 0), 0);
+      const total = earned + adjTotal;
+
+      return {
+        id: emp.id,
+        telegram_id: emp.telegram_id,
+        first_name: emp.first_name,
+        last_name: emp.last_name,
+        workplace: emp.workplace,
+        hourly_rate: emp.hourly_rate,
+        shifts_count: shifts.length,
+        hours: parseFloat(hours.toFixed(2)),
+        earned: parseFloat(earned.toFixed(2)),
+        adjustments: adjs,
+        adj_total: parseFloat(adjTotal.toFixed(2)),
+        total: parseFloat(total.toFixed(2)),
+        no_shows: parseInt(noShows[0].cnt)
+      };
+    }));
+
+    res.json({ month, employees: result });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── EXCEL ЭКСПОРТ ─────────────────────────────────────────────────────────────
+
+app.get('/admin/export/payroll', async (req, res) => {
+  try {
+    const now = nsk();
+    const month = req.query.month || now.toISOString().slice(0, 7);
+    const [year, mon] = month.split('-').map(Number);
+    const monthStart = new Date(Date.UTC(year, mon - 1, 1));
+    const monthEnd = new Date(Date.UTC(year, mon, 1));
+    const monthName = new Date(Date.UTC(year, mon - 1, 15)).toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' });
+
+    const { rows: employees } = await pool.query('SELECT * FROM employees ORDER BY first_name');
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = 'HR-Bot';
+
+    // ── Лист 1: Сводный расчётный лист ──────────────────────────────────────
+    const summarySheet = workbook.addWorksheet('Расчётный лист');
+    summarySheet.columns = [
+      { header: 'Сотрудник', key: 'name', width: 22 },
+      { header: 'Место работы', key: 'workplace', width: 18 },
+      { header: 'Ставка ₽/ч', key: 'rate', width: 12 },
+      { header: 'Смен', key: 'shifts', width: 8 },
+      { header: 'Часов', key: 'hours', width: 10 },
+      { header: 'Заработано ₽', key: 'earned', width: 14 },
+      { header: 'Корр. ₽', key: 'adj', width: 12 },
+      { header: 'Неявок', key: 'noshows', width: 9 },
+      { header: 'К выплате ₽', key: 'total', width: 14 },
+    ];
+
+    // Стиль шапки
+    const headerRow = summarySheet.getRow(1);
+    headerRow.eachCell(cell => {
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1C1C1E' } };
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+      cell.alignment = { vertical: 'middle', horizontal: 'center' };
+      cell.border = { bottom: { style: 'thin', color: { argb: 'FF3A3A3C' } } };
+    });
+    headerRow.height = 28;
+
+    const todayStr = now.toISOString().slice(0, 10);
+    const monthStartStr = month + '-01';
+
+    for (const emp of employees) {
+      const { rows: shifts } = await pool.query(
+        'SELECT * FROM shifts WHERE employee_id = $1 AND start_time >= $2 AND start_time < $3 AND end_time IS NOT NULL AND hours_worked > 0',
+        [emp.id, monthStart, monthEnd]
+      );
+      const { rows: adjs } = await pool.query('SELECT * FROM adjustments WHERE employee_id = $1 AND month = $2', [emp.id, month]);
+      const { rows: noShows } = await pool.query(`
+        SELECT COUNT(*) as cnt FROM planned_shifts ps
+        WHERE ps.employee_id = $1 AND ps.planned_date >= $2 AND ps.planned_date < $3
+          AND NOT EXISTS (SELECT 1 FROM shifts s WHERE s.employee_id = ps.employee_id AND DATE(s.start_time) = ps.planned_date::date AND s.hours_worked > 0)
+      `, [emp.id, monthStartStr, todayStr]);
+
+      const earned = shifts.reduce((s, r) => s + parseFloat(r.earned || 0), 0);
+      const hours = shifts.reduce((s, r) => s + parseFloat(r.hours_worked || 0), 0);
+      const adj = adjs.reduce((s, r) => s + parseFloat(r.amount || 0), 0);
+      const total = earned + adj;
+      const noShowCount = parseInt(noShows[0].cnt);
+
+      const row = summarySheet.addRow({
+        name: `${emp.first_name} ${emp.last_name}`,
+        workplace: emp.workplace || '—',
+        rate: emp.hourly_rate,
+        shifts: shifts.length,
+        hours: parseFloat(hours.toFixed(2)),
+        earned: parseFloat(earned.toFixed(2)),
+        adj: adj !== 0 ? parseFloat(adj.toFixed(2)) : '—',
+        noshows: noShowCount || '—',
+        total: parseFloat(total.toFixed(2)),
+      });
+
+      row.height = 22;
+      row.eachCell((cell, col) => {
+        cell.alignment = { vertical: 'middle', horizontal: col <= 2 ? 'left' : 'center' };
+        cell.border = { bottom: { style: 'hair', color: { argb: 'FFE5E5EA' } } };
+      });
+
+      // Подсветка отрицательных корректировок
+      if (adj < 0) row.getCell('adj').font = { color: { argb: 'FFFF3B30' } };
+      if (adj > 0) row.getCell('adj').font = { color: { argb: 'FF34C759' } };
+      // Подсветка итога
+      row.getCell('total').font = { bold: true };
+    }
+
+    // Итоговая строка
+    const lastRow = summarySheet.lastRow.number + 1;
+    const totalRow = summarySheet.addRow({
+      name: 'ИТОГО',
+      workplace: '', rate: '', shifts: { formula: `SUM(D2:D${lastRow - 1})` },
+      hours: { formula: `SUM(E2:E${lastRow - 1})` },
+      earned: { formula: `SUM(F2:F${lastRow - 1})` },
+      adj: '', noshows: '',
+      total: { formula: `SUM(I2:I${lastRow - 1})` },
+    });
+    totalRow.height = 24;
+    totalRow.eachCell(cell => {
+      cell.font = { bold: true };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF2F2F7' } };
+      cell.border = { top: { style: 'thin', color: { argb: 'FFD1D1D6' } } };
+    });
+
+    // ── Лист 2: Детальный табель ─────────────────────────────────────────────
+    const detailSheet = workbook.addWorksheet('Табель смен');
+    detailSheet.columns = [
+      { header: 'Сотрудник', key: 'name', width: 22 },
+      { header: 'Место работы', key: 'workplace', width: 18 },
+      { header: 'Дата', key: 'date', width: 12 },
+      { header: 'Начало', key: 'start', width: 10 },
+      { header: 'Конец', key: 'end', width: 10 },
+      { header: 'Часов', key: 'hours', width: 10 },
+      { header: 'Заработано ₽', key: 'earned', width: 14 },
+      { header: 'Подтверждено', key: 'confirmed', width: 14 },
+    ];
+    const detailHeader = detailSheet.getRow(1);
+    detailHeader.eachCell(cell => {
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1C1C1E' } };
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+      cell.alignment = { vertical: 'middle', horizontal: 'center' };
+    });
+    detailHeader.height = 28;
+
+    for (const emp of employees) {
+      const { rows: shifts } = await pool.query(
+        'SELECT * FROM shifts WHERE employee_id = $1 AND start_time >= $2 AND start_time < $3 AND end_time IS NOT NULL AND hours_worked > 0 ORDER BY start_time',
+        [emp.id, monthStart, monthEnd]
+      );
+      for (const s of shifts) {
+        const start = new Date(s.start_time);
+        const end = new Date(s.end_time);
+        const row = detailSheet.addRow({
+          name: `${emp.first_name} ${emp.last_name}`,
+          workplace: emp.workplace || '—',
+          date: `${String(start.getUTCDate()).padStart(2,'0')}.${String(start.getUTCMonth()+1).padStart(2,'0')}`,
+          start: `${String(start.getUTCHours()).padStart(2,'0')}:${String(start.getUTCMinutes()).padStart(2,'0')}`,
+          end: `${String(end.getUTCHours()).padStart(2,'0')}:${String(end.getUTCMinutes()).padStart(2,'0')}`,
+          hours: parseFloat(parseFloat(s.hours_worked).toFixed(2)),
+          earned: parseFloat(parseFloat(s.earned).toFixed(2)),
+          confirmed: s.confirmed_at ? 'Да' : 'Нет',
+        });
+        row.height = 20;
+        row.eachCell((cell, col) => {
+          cell.alignment = { vertical: 'middle', horizontal: col <= 2 ? 'left' : 'center' };
+          cell.border = { bottom: { style: 'hair', color: { argb: 'FFE5E5EA' } } };
+        });
+      }
+    }
+
+    // ── Лист 3: Корректировки ────────────────────────────────────────────────
+    const adjSheet = workbook.addWorksheet('Корректировки');
+    adjSheet.columns = [
+      { header: 'Сотрудник', key: 'name', width: 22 },
+      { header: 'Сумма ₽', key: 'amount', width: 12 },
+      { header: 'Тип', key: 'type', width: 12 },
+      { header: 'Комментарий', key: 'comment', width: 30 },
+      { header: 'Дата', key: 'date', width: 14 },
+    ];
+    const adjHeader = adjSheet.getRow(1);
+    adjHeader.eachCell(cell => {
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1C1C1E' } };
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+      cell.alignment = { vertical: 'middle', horizontal: 'center' };
+    });
+    adjHeader.height = 28;
+
+    for (const emp of employees) {
+      const { rows: adjs } = await pool.query(
+        'SELECT * FROM adjustments WHERE employee_id = $1 AND month = $2 ORDER BY created_at',
+        [emp.id, month]
+      );
+      for (const a of adjs) {
+        const row = adjSheet.addRow({
+          name: `${emp.first_name} ${emp.last_name}`,
+          amount: Math.abs(parseFloat(a.amount)),
+          type: a.amount > 0 ? 'Бонус' : 'Штраф',
+          comment: a.comment || '—',
+          date: new Date(a.created_at).toLocaleDateString('ru-RU'),
+        });
+        row.height = 20;
+        row.getCell('type').font = { color: { argb: a.amount > 0 ? 'FF34C759' : 'FFFF3B30' }, bold: true };
+        row.eachCell((cell, col) => {
+          cell.alignment = { vertical: 'middle', horizontal: col <= 1 ? 'left' : 'center' };
+          cell.border = { bottom: { style: 'hair', color: { argb: 'FFE5E5EA' } } };
+        });
+      }
+    }
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="payroll_${month}.xlsx"`);
+    await workbook.xlsx.write(res);
+    res.end();
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
