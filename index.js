@@ -39,32 +39,46 @@ bot.command('app', async (ctx) => {
 });
 
 bot.action(/approve_(\d+)/, async (ctx) => {
+  await ctx.answerCbQuery();
   if (ctx.from.id !== ADMIN_ID) return;
   const telegram_id = parseInt(ctx.match[1]);
 
-  const { rows } = await pool.query('SELECT * FROM pending_employees WHERE telegram_id = $1', [telegram_id]);
-  if (!rows[0]) return ctx.reply('Заявка не найдена.');
+  try {
+    const { rows } = await pool.query('SELECT * FROM pending_employees WHERE telegram_id = $1', [telegram_id]);
+    if (!rows[0]) return ctx.reply('Заявка не найдена или уже обработана.');
 
-  await pool.query(
-    'INSERT INTO employees (telegram_id, first_name, last_name, hourly_rate, workplace) VALUES ($1, $2, $3, $4, $5)',
-    [rows[0].telegram_id, rows[0].first_name, rows[0].last_name, 0, 'Не указано']
-  );
-  await pool.query('DELETE FROM pending_employees WHERE telegram_id = $1', [telegram_id]);
+    await pool.query(
+      'INSERT INTO employees (telegram_id, first_name, last_name, hourly_rate, workplace) VALUES ($1, $2, $3, $4, $5)',
+      [rows[0].telegram_id, rows[0].first_name, rows[0].last_name, 0, 'Не указано']
+    );
+    await pool.query('DELETE FROM pending_employees WHERE telegram_id = $1', [telegram_id]);
 
-  await ctx.telegram.sendMessage(telegram_id, '✅ Твоя заявка одобрена!\n\nОткрой приложение и начни работу:');
-  await ctx.telegram.sendMessage(telegram_id, 'Твоё приложение:', getMiniAppButton(telegram_id));
-  await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
-  await ctx.reply(`✅ Сотрудник ${rows[0].first_name} ${rows[0].last_name} добавлен!`);
+    try { await ctx.editMessageReplyMarkup({ inline_keyboard: [] }); } catch {}
+
+    await ctx.reply(`✅ Сотрудник ${rows[0].first_name} ${rows[0].last_name} добавлен!`);
+
+    await ctx.telegram.sendMessage(telegram_id, '✅ Твоя заявка одобрена! Открой приложение и начни работу:');
+    await ctx.telegram.sendMessage(telegram_id, 'Твоё приложение:', getMiniAppButton(telegram_id));
+  } catch (e) {
+    console.error('Ошибка при одобрении:', e.message);
+    await ctx.reply(`❌ Ошибка: ${e.message}`);
+  }
 });
 
 bot.action(/reject_(\d+)/, async (ctx) => {
+  await ctx.answerCbQuery();
   if (ctx.from.id !== ADMIN_ID) return;
   const telegram_id = parseInt(ctx.match[1]);
 
-  await pool.query('DELETE FROM pending_employees WHERE telegram_id = $1', [telegram_id]);
-  await ctx.telegram.sendMessage(telegram_id, '❌ Твоя заявка отклонена. Обратись к администратору.');
-  await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
-  await ctx.reply('Заявка отклонена.');
+  try {
+    await pool.query('DELETE FROM pending_employees WHERE telegram_id = $1', [telegram_id]);
+    try { await ctx.editMessageReplyMarkup({ inline_keyboard: [] }); } catch {}
+    await ctx.reply('Заявка отклонена.');
+    await ctx.telegram.sendMessage(telegram_id, '❌ Твоя заявка отклонена. Обратись к администратору.');
+  } catch (e) {
+    console.error('Ошибка при отклонении:', e.message);
+    await ctx.reply(`❌ Ошибка: ${e.message}`);
+  }
 });
 
 initDB().then(async () => {

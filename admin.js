@@ -40,7 +40,7 @@ function registerAdmin(bot) {
   const { rows } = await pool.query('SELECT * FROM employees WHERE telegram_id = $1', [telegram_id]);
   if (!rows[0]) return ctx.reply(`⚠️ Сотрудник с ID ${telegram_id} не найден.`);
 
-  // Сначала удаляем плановые смены и смены
+  await pool.query('DELETE FROM adjustments WHERE employee_id = $1', [rows[0].id]);
   await pool.query('DELETE FROM planned_shifts WHERE employee_id = $1', [rows[0].id]);
   await pool.query('DELETE FROM shifts WHERE employee_id = $1', [rows[0].id]);
   await pool.query('DELETE FROM employees WHERE telegram_id = $1', [telegram_id]);
