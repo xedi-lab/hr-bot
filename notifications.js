@@ -6,7 +6,7 @@ const ADMIN_ID = parseInt(process.env.ADMIN_ID);
 function registerNotifications(bot) {
 
   // Каждые 15 минут — авто-открытие смен и алёрты опозданий
-  cron.schedule('*/15 2-14 * * *', async () => {
+  cron.schedule('*/15 * * * *', async () => {
     try {
       await autoOpenPlannedShifts(bot);
       await checkLateEmployees(bot);
