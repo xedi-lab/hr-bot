@@ -124,11 +124,52 @@ function registerMasterBot(app) {
     let text = `🏢 *Компании (${rows.length}):*\n\n`;
     for (const c of rows) {
       const status = c.active ? '🟢' : '🔴';
-      text += `${status} *${c.name}*\n`;
-      text += `   ID: ${c.id} · 👥 ${c.employee_count} сотр.\n`;
-      text += `   Админ: ${c.admin_telegram_id}\n`;
-      text += `   Дата: ${new Date(c.created_at).toLocaleDateString('ru-RU')}\n\n`;
+      const date = new Date(c.created_at).toLocaleDateString('ru-RU');
+      text += `${status} *${c.name}* — ID \`${c.id}\`\n`;
+      text += `   👥 ${c.employee_count} сотр. · 📅 ${date}\n\n`;
     }
+    text += `_/company [id] — карточка компании_`;
+
+    ctx.reply(text, { parse_mode: 'Markdown' });
+  });
+
+  // ── /company [id] ─────────────────────────────────────────────────────────
+  bot.command('company', async ctx => {
+    if (!isMasterAdmin(ctx)) return ctx.reply('Нет доступа.');
+    const id = parseInt(ctx.message.text.split(' ')[1]);
+    if (!id) return ctx.reply('Формат: /company [id]');
+
+    const { rows } = await pool.query(`
+      SELECT c.*, COUNT(e.id) as employee_count
+      FROM companies c
+      LEFT JOIN employees e ON e.company_id = c.id
+      WHERE c.id = $1
+      GROUP BY c.id
+    `, [id]);
+
+    if (!rows[0]) return ctx.reply('Компания не найдена.');
+    const c = rows[0];
+
+    // Получить username бота
+    let botUsername = '—';
+    try {
+      const testBot = new Telegraf(c.bot_token);
+      const info = await testBot.telegram.getMe();
+      botUsername = `@${info.username}`;
+    } catch {}
+
+    const status = c.active ? '🟢 Активна' : '🔴 Заморожена';
+    const date = new Date(c.created_at).toLocaleDateString('ru-RU');
+
+    const text =
+      `🏢 *${c.name}*\n\n` +
+      `Статус: ${status}\n` +
+      `Бот: ${botUsername}\n` +
+      `Сотрудников: ${c.employee_count}\n` +
+      `Админ ID: \`${c.admin_telegram_id}\`\n` +
+      `Подключена: ${date}\n\n` +
+      `_/suspend ${c.id} — заморозить_\n` +
+      `_/resume ${c.id} — восстановить_`;
 
     ctx.reply(text, { parse_mode: 'Markdown' });
   });
