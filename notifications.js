@@ -81,6 +81,8 @@ async function autoOpenPlannedShifts(bot) {
     const todayStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
     const currentMinutes = now.getHours() * 60 + now.getMinutes();
 
+    console.log(`[autoOpen] ${todayStr} ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')} НСК (${currentMinutes} мин)`);
+
     const { rows: shifts } = await pool.query(`
       SELECT ps.*, e.telegram_id, e.first_name, e.last_name, e.id as emp_id
       FROM planned_shifts ps
@@ -88,10 +90,14 @@ async function autoOpenPlannedShifts(bot) {
       WHERE ps.planned_date = $1
     `, [todayStr]);
 
+    console.log(`[autoOpen] плановых смен на сегодня: ${shifts.length}`);
+
     for (const shift of shifts) {
       const [sh, sm] = shift.shift_start.split(':').map(Number);
       const shiftMinutes = sh * 60 + sm;
       const diff = currentMinutes - shiftMinutes;
+
+      console.log(`[autoOpen] ${shift.first_name} ${shift.last_name}: старт ${shift.shift_start} (${shiftMinutes} мин), diff=${diff}`);
 
       // Открываем в окне ±7 минут от начала смены
       if (diff < -7 || diff > 7) continue;
