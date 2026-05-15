@@ -100,7 +100,10 @@ initDB().then(async () => {
 
   if (domain) {
     const webhookUrl = `https://${domain}${webhookPath}`;
-    await bot.telegram.setWebhook(webhookUrl, { drop_pending_updates: false });
+    await bot.telegram.setWebhook(webhookUrl, {
+      drop_pending_updates: false,
+      allowed_updates: ['message', 'callback_query', 'edited_message', 'channel_post']
+    });
     const info = await bot.telegram.getWebhookInfo();
     console.log('✅ Webhook установлен:', webhookUrl);
     console.log('📡 Webhook info:', JSON.stringify(info));
