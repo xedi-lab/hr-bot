@@ -93,14 +93,17 @@ initDB().then(async () => {
 
   // Webhook роут — отвечаем 200 сразу, обрабатываем асинхронно
   app.post(webhookPath, (req, res) => {
+    console.log('📨 Webhook hit:', JSON.stringify(req.body).slice(0, 300));
     res.sendStatus(200);
     bot.handleUpdate(req.body).catch(e => console.error('Bot handleUpdate error:', e));
   });
 
   if (domain) {
     const webhookUrl = `https://${domain}${webhookPath}`;
-    await bot.telegram.setWebhook(webhookUrl, { drop_pending_updates: true });
-    console.log('Webhook установлен:', webhookUrl);
+    await bot.telegram.setWebhook(webhookUrl, { drop_pending_updates: false });
+    const info = await bot.telegram.getWebhookInfo();
+    console.log('✅ Webhook установлен:', webhookUrl);
+    console.log('📡 Webhook info:', JSON.stringify(info));
   } else {
     // Локальная разработка — polling
     await bot.launch({ dropPendingUpdates: true });
