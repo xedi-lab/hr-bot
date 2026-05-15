@@ -5,29 +5,20 @@ const ADMIN_ID = parseInt(process.env.ADMIN_ID);
 
 function registerNotifications(bot) {
 
-  // 09:30 НСК (02:30 UTC) — кто не открыл смену
-  cron.schedule('30 2 * * *', async () => {
+  // Каждые 15 минут — авто-открытие смен и алёрты опозданий
+  cron.schedule('*/15 2-14 * * *', async () => {
     try {
-      const { rows: employees } = await pool.query('SELECT * FROM employees');
-      const notOnShift = [];
-      for (const emp of employees) {
-        const { rows: openShift } = await pool.query(
-          'SELECT * FROM shifts WHERE employee_id = $1 AND end_time IS NULL', [emp.id]
-        );
-        if (openShift.length === 0) notOnShift.push(emp);
-      }
-      if (notOnShift.length === 0) return;
-      let text = `🔔 Напоминание (09:30 НСК)\n\nСледующие сотрудники не открыли смену:\n\n`;
-      notOnShift.forEach(emp => { text += `• ${emp.first_name} ${emp.last_name}\n`; });
-      await bot.telegram.sendMessage(ADMIN_ID, text);
+      await autoOpenPlannedShifts(bot);
+      await checkLateEmployees(bot);
     } catch (e) {
-      console.error('Ошибка уведомления:', e.message);
+      console.error('Ошибка планировщика:', e.message);
     }
   });
 
-  // 21:00 НСК (14:00 UTC) — итог дня
+  // 21:00 НСК (14:00 UTC) — авто-закрытие смен и итог дня
   cron.schedule('0 14 * * *', async () => {
     try {
+      await autoCloseShifts();
       const now = new Date();
       now.setHours(now.getUTCHours() + 7);
       const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -53,41 +44,111 @@ function registerNotifications(bot) {
       if (!hasData) text += 'Никто не работал сегодня.';
       await bot.telegram.sendMessage(ADMIN_ID, text);
 
-      // Напоминание о завтрашних сменах сотрудникам
       await sendTomorrowReminders(bot);
     } catch (e) {
       console.error('Ошибка итога дня:', e.message);
     }
   });
 
-  // Каждые 15 минут — напоминания и алёрты
-  cron.schedule('*/15 2-14 * * *', async () => {
-    try {
-      await sendShiftSoonReminders(bot);
-      await checkLateEmployees(bot);
-    } catch (e) {
-      console.error('Ошибка напоминания за 15 минут:', e.message);
-    }
-  });
-
   // Тест уведомлений
   bot.command('test_notify', async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) return;
-    const { rows: employees } = await pool.query('SELECT * FROM employees');
-    const notOnShift = [];
-    for (const emp of employees) {
-      const { rows: openShift } = await pool.query(
-        'SELECT * FROM shifts WHERE employee_id = $1 AND end_time IS NULL', [emp.id]
-      );
-      if (openShift.length === 0) notOnShift.push(emp);
-    }
-    if (notOnShift.length === 0) return ctx.reply('✅ Все сотрудники сейчас на смене.');
-    let text = `🔔 Напоминание (тест)\n\nСледующие сотрудники не открыли смену:\n\n`;
-    notOnShift.forEach(emp => { text += `• ${emp.first_name} ${emp.last_name}\n`; });
+    const now = new Date();
+    now.setHours(now.getUTCHours() + 7);
+    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const { rows: unconfirmed } = await pool.query(`
+      SELECT s.*, e.first_name, e.last_name
+      FROM shifts s JOIN employees e ON s.employee_id = e.id
+      WHERE s.end_time IS NULL AND s.confirmed_at IS NULL AND s.start_time >= $1
+    `, [startOfDay]);
+    if (unconfirmed.length === 0) return ctx.reply('✅ Все активные смены подтверждены.');
+    let text = `🔔 Не подтверждены смены (тест):\n\n`;
+    unconfirmed.forEach(s => {
+      const minutesLate = Math.floor((now - new Date(s.start_time)) / (1000 * 60));
+      text += `• ${s.first_name} ${s.last_name} — опаздывает ${minutesLate} мин.\n`;
+    });
     ctx.reply(text);
   });
 
   console.log('Планировщик уведомлений запущен.');
+}
+
+// Авто-открытие плановых смен (вызывается каждые 15 минут)
+async function autoOpenPlannedShifts(bot) {
+  try {
+    const now = new Date();
+    now.setHours(now.getUTCHours() + 7);
+    const todayStr = now.toISOString().slice(0, 10);
+    const currentMinutes = now.getHours() * 60 + now.getMinutes();
+
+    const { rows: shifts } = await pool.query(`
+      SELECT ps.*, e.telegram_id, e.first_name, e.last_name, e.id as emp_id
+      FROM planned_shifts ps
+      JOIN employees e ON ps.employee_id = e.id
+      WHERE ps.planned_date = $1
+    `, [todayStr]);
+
+    for (const shift of shifts) {
+      const [sh, sm] = shift.shift_start.split(':').map(Number);
+      const shiftMinutes = sh * 60 + sm;
+      const diff = currentMinutes - shiftMinutes;
+
+      // Открываем в окне ±7 минут от начала смены
+      if (diff < -7 || diff > 7) continue;
+
+      // Проверяем, не открыта ли уже смена
+      const { rows: existing } = await pool.query(
+        'SELECT id FROM shifts WHERE employee_id = $1 AND end_time IS NULL', [shift.emp_id]
+      );
+      if (existing.length > 0) continue;
+
+      // Создаём смену с плановым временем начала
+      const startTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), sh, sm, 0);
+      await pool.query(
+        'INSERT INTO shifts (employee_id, start_time) VALUES ($1, $2)',
+        [shift.emp_id, startTime]
+      );
+
+      try {
+        await bot.telegram.sendMessage(shift.telegram_id,
+          `🟢 Твоя смена началась!\n\n🕐 ${shift.shift_start} — ${shift.shift_end}${shift.note ? `\n📍 ${shift.note}` : ''}\n\nПодтверди присутствие в приложении.`
+        );
+      } catch (e) {
+        console.error(`Ошибка уведомления о старте смены ${shift.telegram_id}:`, e.message);
+      }
+    }
+  } catch (e) {
+    console.error('Ошибка autoOpenPlannedShifts:', e.message);
+  }
+}
+
+// Авто-закрытие незакрытых смен в 21:00 НСК
+async function autoCloseShifts() {
+  try {
+    const now = new Date();
+    now.setHours(now.getUTCHours() + 7);
+    const cutoff = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 21, 0, 0);
+
+    const { rows: openShifts } = await pool.query(`
+      SELECT s.*, e.hourly_rate
+      FROM shifts s JOIN employees e ON s.employee_id = e.id
+      WHERE s.end_time IS NULL
+    `);
+
+    for (const shift of openShifts) {
+      const startTime = new Date(shift.start_time);
+      const endTime = cutoff < now ? cutoff : now;
+      const hoursWorked = Math.max(0, (endTime - startTime) / (1000 * 60 * 60));
+      const earned = parseFloat((hoursWorked * shift.hourly_rate).toFixed(2));
+
+      await pool.query(
+        'UPDATE shifts SET end_time = $1, hours_worked = $2, earned = $3 WHERE id = $4',
+        [endTime, hoursWorked.toFixed(2), earned, shift.id]
+      );
+    }
+  } catch (e) {
+    console.error('Ошибка autoCloseShifts:', e.message);
+  }
 }
 
 // Напоминание за день до смены (вызывается в 21:00 НСК)
@@ -120,81 +181,29 @@ async function sendTomorrowReminders(bot) {
   }
 }
 
-// Напоминание за 15 минут до смены
-async function sendShiftSoonReminders(bot) {
-  try {
-    const now = new Date();
-    now.setHours(now.getUTCHours() + 7);
-
-    const todayStr = now.toISOString().slice(0, 10);
-    const currentMinutes = now.getHours() * 60 + now.getMinutes();
-
-    const { rows: shifts } = await pool.query(`
-      SELECT ps.*, e.telegram_id, e.first_name, e.last_name
-      FROM planned_shifts ps
-      JOIN employees e ON ps.employee_id = e.id
-      WHERE ps.planned_date = $1
-    `, [todayStr]);
-
-    for (const shift of shifts) {
-      const [sh, sm] = shift.shift_start.split(':').map(Number);
-      const shiftMinutes = sh * 60 + sm;
-      const diff = shiftMinutes - currentMinutes;
-
-      // Отправляем если до смены от 14 до 16 минут
-      if (diff >= 14 && diff <= 16) {
-        const text = `⏰ Смена начинается через 15 минут!\n\n🕐 ${shift.shift_start} — ${shift.shift_end}${shift.note ? `\n📍 ${shift.note}` : ''}\n\nОткрой приложение и отметь начало смены.`;
-        try {
-          await bot.telegram.sendMessage(shift.telegram_id, text);
-        } catch (e) {
-          console.error(`Ошибка отправки за 15 минут ${shift.telegram_id}:`, e.message);
-        }
-      }
-    }
-  } catch (e) {
-    console.error('Ошибка sendShiftSoonReminders:', e.message);
-  }
-}
-
-// Алёрты админу об опозданиях
+// Алёрты админу о неподтверждённых сменах (15+ минут без подтверждения)
 async function checkLateEmployees(bot) {
   try {
     const now = new Date();
     now.setHours(now.getUTCHours() + 7);
-    const todayStr = now.toISOString().slice(0, 10);
-    const currentMinutes = now.getHours() * 60 + now.getMinutes();
+    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
-    const { rows: shifts } = await pool.query(`
-      SELECT ps.*, e.telegram_id, e.first_name, e.last_name, e.id as emp_id
-      FROM planned_shifts ps
-      JOIN employees e ON ps.employee_id = e.id
-      WHERE ps.planned_date = $1
-    `, [todayStr]);
+    const { rows: unconfirmed } = await pool.query(`
+      SELECT s.*, e.first_name, e.last_name
+      FROM shifts s JOIN employees e ON s.employee_id = e.id
+      WHERE s.end_time IS NULL
+        AND s.confirmed_at IS NULL
+        AND s.start_time >= $1
+        AND s.start_time <= $2
+    `, [startOfDay, new Date(now.getTime() - 15 * 60 * 1000)]);
 
-    for (const shift of shifts) {
-      const [sh, sm] = shift.shift_start.split(':').map(Number);
-      const shiftMinutes = sh * 60 + sm;
-      const diff = currentMinutes - shiftMinutes;
-
-      // Опоздал — прошло от 15 до 17 минут после начала смены
-      if (diff >= 15 && diff <= 17) {
-        // Проверяем открыл ли смену
-        const { rows: openShift } = await pool.query(
-          'SELECT * FROM shifts WHERE employee_id = $1 AND end_time IS NULL', [shift.emp_id]
-        );
-        const { rows: todayShift } = await pool.query(
-          'SELECT * FROM shifts WHERE employee_id = $1 AND start_time >= $2',
-          [shift.emp_id, new Date(now.getFullYear(), now.getMonth(), now.getDate())]
-        );
-
-        if (openShift.length === 0 && todayShift.length === 0) {
-          const text = `⚠️ Опоздание!\n\n👤 ${shift.first_name} ${shift.last_name}\n🕐 Плановое начало: ${shift.shift_start}\n⏱ Опаздывает на 15+ минут\n\nСмена не открыта.`;
-          try {
-            await bot.telegram.sendMessage(ADMIN_ID, text);
-          } catch (e) {
-            console.error('Ошибка алёрта опоздания:', e.message);
-          }
-        }
+    for (const shift of unconfirmed) {
+      const minutesLate = Math.floor((now - new Date(shift.start_time)) / (1000 * 60));
+      const text = `⚠️ Смена не подтверждена!\n\n👤 ${shift.first_name} ${shift.last_name}\n🕐 Начало: ${new Date(shift.start_time).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}\n⏱ Без подтверждения: ${minutesLate} мин.`;
+      try {
+        await bot.telegram.sendMessage(ADMIN_ID, text);
+      } catch (e) {
+        console.error('Ошибка алёрта опоздания:', e.message);
       }
     }
   } catch (e) {
@@ -202,4 +211,4 @@ async function checkLateEmployees(bot) {
   }
 }
 
-module.exports = { registerNotifications, sendTomorrowReminders, checkLateEmployees };
+module.exports = { registerNotifications, sendTomorrowReminders, checkLateEmployees, autoOpenPlannedShifts, autoCloseShifts };

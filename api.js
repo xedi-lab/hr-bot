@@ -62,29 +62,24 @@ app.get('/employee/:telegram_id/shifts', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Открыть смену
+// Подтвердить смену
 app.post('/employee/:telegram_id/shift/open', async (req, res) => {
   try {
     const { rows: emp } = await pool.query('SELECT * FROM employees WHERE telegram_id = $1', [parseInt(req.params.telegram_id)]);
     if (!emp[0]) return res.status(404).json({ error: 'Сотрудник не найден' });
 
+    const { rows: openShift } = await pool.query(
+      'SELECT * FROM shifts WHERE employee_id = $1 AND end_time IS NULL AND confirmed_at IS NULL',
+      [emp[0].id]
+    );
+    if (!openShift[0]) return res.status(400).json({ error: 'Нет активной смены для подтверждения' });
+
     const now = new Date();
     now.setHours(now.getUTCHours() + 7);
-    const hour = now.getHours();
 
-    if (hour < 9) return res.status(400).json({ error: `Смену можно открыть только с 09:00 НСК. Сейчас ${hour}:${String(now.getMinutes()).padStart(2, '0')}` });
-    if (hour >= 21) return res.status(400).json({ error: 'Рабочий день уже закончился' });
+    await pool.query('UPDATE shifts SET confirmed_at = $1 WHERE id = $2', [now, openShift[0].id]);
 
-    const { rows: openShift } = await pool.query('SELECT * FROM shifts WHERE employee_id = $1 AND end_time IS NULL', [emp[0].id]);
-    if (openShift.length > 0) return res.status(400).json({ error: 'Смена уже открыта' });
-
-    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const { rows: todayShift } = await pool.query('SELECT * FROM shifts WHERE employee_id = $1 AND start_time >= $2 AND end_time IS NOT NULL', [emp[0].id, startOfDay]);
-    if (todayShift.length > 0) return res.status(400).json({ error: 'Ты уже отработал смену сегодня. До завтра! 👋' });
-
-    await pool.query('INSERT INTO shifts (employee_id, start_time) VALUES ($1, $2)', [emp[0].id, now]);
-
-    res.json({ success: true, time: `${String(hour).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}` });
+    res.json({ success: true, confirmed_at: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}` });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
