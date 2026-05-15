@@ -147,7 +147,7 @@ app.get('/admin/stats', async (req, res) => {
 
       const { rows: onShift } = await pool.query('SELECT * FROM shifts WHERE employee_id = $1 AND end_time IS NULL', [emp.id]);
 
-      return { ...emp, ...stats[0], on_shift: onShift.length > 0 };
+      return { ...emp, ...stats[0], on_shift: onShift.length > 0, open_shift: onShift[0] || null };
     }));
 
     res.json(result);
