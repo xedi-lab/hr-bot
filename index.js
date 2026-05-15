@@ -39,12 +39,15 @@ bot.command('app', async (ctx) => {
 });
 
 bot.action(/approve_(\d+)/, async (ctx) => {
-  await ctx.answerCbQuery();
+  console.log('approve action triggered, from:', ctx.from.id, 'ADMIN_ID:', ADMIN_ID);
+  await ctx.answerCbQuery().catch(e => console.error('answerCbQuery error:', e.message));
   if (ctx.from.id !== ADMIN_ID) return;
   const telegram_id = parseInt(ctx.match[1]);
+  console.log('approving telegram_id:', telegram_id);
 
   try {
     const { rows } = await pool.query('SELECT * FROM pending_employees WHERE telegram_id = $1', [telegram_id]);
+    console.log('pending rows:', rows.length);
     if (!rows[0]) return ctx.reply('Заявка не найдена или уже обработана.');
 
     await pool.query(
@@ -88,8 +91,11 @@ initDB().then(async () => {
   const domain = process.env.RAILWAY_PUBLIC_DOMAIN;
   const webhookPath = '/bot-webhook';
 
-  // Webhook роут на существующем Express сервере
-  app.post(webhookPath, (req, res) => bot.handleUpdate(req.body, res));
+  // Webhook роут — отвечаем 200 сразу, обрабатываем асинхронно
+  app.post(webhookPath, (req, res) => {
+    res.sendStatus(200);
+    bot.handleUpdate(req.body).catch(e => console.error('Bot handleUpdate error:', e));
+  });
 
   if (domain) {
     const webhookUrl = `https://${domain}${webhookPath}`;
