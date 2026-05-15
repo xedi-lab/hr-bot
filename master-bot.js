@@ -100,6 +100,7 @@ async function showCompany(ctx, companyId) {
       c.active ? '🔴 Заморозить' : '🟢 Восстановить',
       c.active ? `suspend_${c.id}` : `resume_${c.id}`
     )],
+    [Markup.button.callback('🗑 Удалить компанию', `delete_confirm_${c.id}`)],
     [Markup.button.callback('◀️ К списку', 'companies')],
   ];
 
@@ -152,6 +153,40 @@ function registerMasterBot(app) {
     const id = parseInt(ctx.match[1]);
     await pool.query('UPDATE companies SET active = TRUE WHERE id = $1', [id]);
     await showCompany(ctx, id);
+  });
+
+  // ── Удалить компанию (подтверждение) ─────────────────────────────────────
+  bot.action(/^delete_confirm_(\d+)$/, async ctx => {
+    await ctx.answerCbQuery();
+    const id = parseInt(ctx.match[1]);
+    const { rows } = await pool.query('SELECT name FROM companies WHERE id = $1', [id]);
+    if (!rows[0]) return ctx.answerCbQuery('Компания не найдена');
+    await ctx.editMessageText(
+      `⚠️ *Удалить компанию "${rows[0].name}"?*\n\nБудут удалены все сотрудники, смены и данные. Это действие необратимо.`,
+      { parse_mode: 'Markdown', ...Markup.inlineKeyboard([
+        [Markup.button.callback('🗑 Да, удалить', `delete_do_${id}`)],
+        [Markup.button.callback('◀️ Отмена', `company_${id}`)],
+      ]) }
+    );
+  });
+
+  bot.action(/^delete_do_(\d+)$/, async ctx => {
+    await ctx.answerCbQuery();
+    const id = parseInt(ctx.match[1]);
+    const { rows } = await pool.query('SELECT name FROM companies WHERE id = $1', [id]);
+    const name = rows[0]?.name || `#${id}`;
+
+    const empRows = await pool.query('SELECT id FROM employees WHERE company_id = $1', [id]);
+    for (const emp of empRows.rows) {
+      await pool.query('DELETE FROM adjustments WHERE employee_id = $1', [emp.id]);
+      await pool.query('DELETE FROM planned_shifts WHERE employee_id = $1', [emp.id]);
+      await pool.query('DELETE FROM shifts WHERE employee_id = $1', [emp.id]);
+    }
+    await pool.query('DELETE FROM employees WHERE company_id = $1', [id]);
+    await pool.query('DELETE FROM pending_employees WHERE company_id = $1', [id]);
+    await pool.query('DELETE FROM companies WHERE id = $1', [id]);
+
+    await ctx.editMessageText(`✅ Компания *${name}* удалена.`, { parse_mode: 'Markdown', ...mainMenuKeyboard() });
   });
 
   // ── Переименовать ─────────────────────────────────────────────────────────
