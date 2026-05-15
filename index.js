@@ -1,5 +1,5 @@
 require('dotenv').config();
-require('./api');
+const app = require('./api');
 const { Telegraf, Markup } = require('telegraf');
 const { pool, initDB } = require('./database');
 const { registerNotifications } = require('./notifications');
@@ -45,7 +45,6 @@ bot.action(/approve_(\d+)/, async (ctx) => {
   const { rows } = await pool.query('SELECT * FROM pending_employees WHERE telegram_id = $1', [telegram_id]);
   if (!rows[0]) return ctx.reply('Заявка не найдена.');
 
-  // Получаем фото профиля
   let photo_url = null;
   try {
     const photos = await ctx.telegram.getUserProfilePhotos(telegram_id, 0, 1);
@@ -80,23 +79,26 @@ bot.action(/reject_(\d+)/, async (ctx) => {
   await ctx.reply('Заявка отклонена.');
 });
 
-initDB().then(() => {
+initDB().then(async () => {
   registerAdmin(bot);
   registerNotifications(bot);
-  const startBot = async () => {
-  try {
-    await bot.launch();
-  } catch (e) {
-    if (e.message && e.message.includes('409')) {
-      console.log('Конфликт инстансов, перезапуск через 5 сек...');
-      setTimeout(startBot, 5000);
-    } else {
-      throw e;
-    }
-  }
-};
 
-startBot();
+  const domain = process.env.RAILWAY_PUBLIC_DOMAIN;
+  const webhookPath = '/bot-webhook';
+
+  // Webhook роут на существующем Express сервере
+  app.post(webhookPath, (req, res) => bot.handleUpdate(req.body, res));
+
+  if (domain) {
+    const webhookUrl = `https://${domain}${webhookPath}`;
+    await bot.telegram.setWebhook(webhookUrl, { drop_pending_updates: true });
+    console.log('Webhook установлен:', webhookUrl);
+  } else {
+    // Локальная разработка — polling
+    await bot.launch({ dropPendingUpdates: true });
+    console.log('Бот запущен в режиме polling (локально)');
+  }
+
   console.log('Бот запущен...');
 });
 
