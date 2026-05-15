@@ -7,6 +7,7 @@ const { registerAdmin } = require('./admin');
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const ADMIN_ID = parseInt(process.env.ADMIN_ID);
+const ADMIN_IDS = [ADMIN_ID, 961116530];
 
 function getMiniAppButton(userId) {
   const url = `https://mini-app-xedi11.vercel.app?uid=${userId}`;
@@ -39,9 +40,9 @@ bot.command('app', async (ctx) => {
 });
 
 bot.action(/approve_(\d+)/, async (ctx) => {
-  console.log('approve action triggered, from:', ctx.from.id, 'ADMIN_ID:', ADMIN_ID);
+  console.log('approve action triggered, from:', ctx.from.id);
   await ctx.answerCbQuery().catch(e => console.error('answerCbQuery error:', e.message));
-  if (ctx.from.id !== ADMIN_ID) return;
+  if (!ADMIN_IDS.includes(ctx.from.id)) return;
   const telegram_id = parseInt(ctx.match[1]);
   console.log('approving telegram_id:', telegram_id);
 
@@ -70,7 +71,7 @@ bot.action(/approve_(\d+)/, async (ctx) => {
 
 bot.action(/reject_(\d+)/, async (ctx) => {
   await ctx.answerCbQuery();
-  if (ctx.from.id !== ADMIN_ID) return;
+  if (!ADMIN_IDS.includes(ctx.from.id)) return;
   const telegram_id = parseInt(ctx.match[1]);
 
   try {

