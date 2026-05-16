@@ -71,6 +71,27 @@ app.get('/admin/me', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Защита admin-роутов: проверяем uid ────────────────────────────────────────
+
+const API_MASTER_ADMIN_IDS = [parseInt(process.env.ADMIN_ID), 961116530];
+
+app.use('/admin', async (req, res, next) => {
+  if (req.path === '/me') return next(); // публичный эндпоинт для самопроверки
+  const companyId = cid(req);
+  if (!companyId) return next();
+  const uid = parseInt(req.query.uid ?? req.body?.uid);
+  if (!uid || isNaN(uid)) return res.status(401).json({ error: 'uid required' });
+  if (API_MASTER_ADMIN_IDS.includes(uid)) return next();
+  try {
+    const { rows } = await pool.query(
+      'SELECT id FROM companies WHERE id = $1 AND admin_telegram_id = $2',
+      [companyId, uid]
+    );
+    if (!rows[0]) return res.status(403).json({ error: 'not_admin' });
+  } catch (e) { return res.status(500).json({ error: e.message }); }
+  next();
+});
+
 // ── Получить сотрудника ───────────────────────────────────────────────────────
 
 app.get('/employee/:telegram_id', async (req, res) => {

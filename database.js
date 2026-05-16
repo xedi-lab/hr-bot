@@ -81,6 +81,7 @@ async function initDB() {
   await pool.query(`ALTER TABLE shifts ADD COLUMN IF NOT EXISTS confirmed_at TIMESTAMP;`);
   await pool.query(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS company_id INTEGER REFERENCES companies(id);`);
   await pool.query(`ALTER TABLE pending_employees ADD COLUMN IF NOT EXISTS company_id INTEGER REFERENCES companies(id);`);
+  await pool.query(`ALTER TABLE companies ADD COLUMN IF NOT EXISTS timezone_offset INTEGER DEFAULT 7;`);
 
   // ── Seed default company from env (backward compat for existing data) ─────
   const token = process.env.BOT_TOKEN;
